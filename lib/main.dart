@@ -23,6 +23,7 @@ import 'screens/boarding_pass_screen.dart';
 import 'screens/premium_booking_screen.dart';
 import 'screens/delivery_booking_screen.dart';
 import 'screens/delivery_tracking_screen.dart';
+import 'screens/backend_test_screen.dart';
 import 'services/notification_service.dart';
 import 'services/fcm_config_service.dart';
 import 'services/error_handler_service.dart';
@@ -171,6 +172,9 @@ class MyApp extends ConsumerWidget {
                 break;
               case '/delivery-tracking':
                 page = const DeliveryTrackingScreen();
+                break;
+              case '/backend-test':
+                page = const BackendTestScreen();
                 break;
               default:
                 page = const SplashScreen();
