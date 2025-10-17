@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'error_handler_service.dart';
@@ -30,6 +31,14 @@ class FCMConfigService {
   Future<bool> configure() async {
     if (_isConfigured) return true;
     if (kIsWeb) return true; // Skip for web
+
+    // Check if Firebase is available
+    try {
+      Firebase.app();
+    } catch (e) {
+      debugPrint('⚠️ Firebase not initialized, skipping FCM configuration');
+      return false;
+    }
 
     try {
       // Set up background message handler

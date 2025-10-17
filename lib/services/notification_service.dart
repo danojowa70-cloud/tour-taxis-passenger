@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -74,6 +75,14 @@ class NotificationService {
 
   /// Initialize Firebase messaging
   Future<void> _initializeFirebaseMessaging() async {
+    try {
+      // Check if Firebase is available
+      Firebase.app();
+    } catch (e) {
+      debugPrint('⚠️ Firebase not initialized, skipping FCM setup');
+      return;
+    }
+    
     // Request permissions
     final settings = await _firebaseMessaging.requestPermission(
       alert: true,

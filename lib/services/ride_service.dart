@@ -88,24 +88,36 @@ class RideService {
 
   Future<void> _findAndNotifyDrivers(String rideId, double pickupLat, double pickupLng, double fare) async {
     try {
-      // Find nearby available drivers using the database function
+      // Find nearby online and available drivers using the database function
       final nearbyDrivers = await _client
           .rpc('get_nearby_drivers', params: {
             'lat': pickupLat,
             'lng': pickupLng,
             'radius_km': 10.0, // 10km radius
-          })
-          .limit(10); // Get up to 10 nearest drivers
+          });
+      
+      print('Found ${nearbyDrivers.length} nearby online drivers');
+      
+      // Filter drivers to ensure they are actually online and available
+      final availableDrivers = (nearbyDrivers as List)
+          .where((driver) => 
+            driver['is_online'] == true && 
+            driver['is_available'] == true &&
+            driver['last_seen'] != null)
+          .take(10) // Get up to 10 nearest drivers
+          .toList();
 
-      if (nearbyDrivers.isEmpty) {
+      if (availableDrivers.isEmpty) {
         // No drivers available - log event
         await _client.from('ride_events').insert({
           'ride_id': rideId,
           'actor': 'system',
           'event_type': 'ride:no_drivers',
           'payload': {
-            'message': 'No drivers available in the area',
+            'message': 'No online drivers available in the area',
             'search_radius_km': 10.0,
+            'total_drivers_found': nearbyDrivers.length,
+            'online_available_drivers': availableDrivers.length,
           }
         });
         return;
@@ -117,12 +129,15 @@ class RideService {
         'actor': 'system',
         'event_type': 'ride:drivers_found',
         'payload': {
-          'driver_count': nearbyDrivers.length,
-          'drivers': nearbyDrivers.map((d) => {
+          'driver_count': availableDrivers.length,
+          'drivers': availableDrivers.map((d) => {
             'id': d['id'],
             'name': d['name'],
             'distance_km': d['distance_km'],
             'rating': d['rating'],
+            'is_online': d['is_online'],
+            'is_available': d['is_available'],
+            'vehicle_info': d['vehicle_info'],
           }).toList(),
         }
       });
@@ -135,8 +150,8 @@ class RideService {
           .eq('id', rideId)
           .single();
 
-      // Send broadcast to all nearby drivers
-      for (final driver in nearbyDrivers) {
+      // Send broadcast to all available online drivers
+      for (final driver in availableDrivers) {
         await _client.from('ride_events').insert({
           'ride_id': rideId,
           'actor': 'system',

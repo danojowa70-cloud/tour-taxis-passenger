@@ -28,4 +28,33 @@ export async function getRideHistory(req: Request, res: Response) {
   }
 }
 
+export async function getRideDetails(req: Request, res: Response) {
+  try {
+    const rideId = z.string().min(1).parse(req.params.rideId);
+    const ride = await RidesService.getRideWithDriver(rideId);
+    if (!ride) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+    return res.json({ ride });
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message || 'Invalid request' });
+  }
+}
+
+const nearbyDriversSchema = z.object({
+  lat: z.number(),
+  lng: z.number(),
+  radius: z.number().optional().default(10),
+});
+
+export async function getNearbyDrivers(req: Request, res: Response) {
+  try {
+    const { lat, lng, radius } = nearbyDriversSchema.parse(req.query);
+    const drivers = await RidesService.getNearbyDrivers(lat, lng, radius);
+    return res.json({ drivers, count: drivers.length });
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message || 'Invalid request' });
+  }
+}
+
 

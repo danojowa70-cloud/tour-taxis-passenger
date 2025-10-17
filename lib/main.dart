@@ -24,6 +24,9 @@ import 'screens/premium_booking_screen.dart';
 import 'screens/delivery_booking_screen.dart';
 import 'screens/delivery_tracking_screen.dart';
 import 'screens/backend_test_screen.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
+import 'firebase_options.dart';
 import 'services/notification_service.dart';
 import 'services/fcm_config_service.dart';
 import 'services/error_handler_service.dart';
@@ -36,12 +39,18 @@ Future<void> main() async {
     final themeController = await ThemeController.load();
     debugPrint('✅ Theme controller loaded');
     
-    // Temporarily commenting out Firebase initialization due to network connectivity issues.
-    // if (!kIsWeb) {
-    //   await Firebase.initializeApp();
-    //   debugPrint('✅ Firebase initialized');
-    //   // Background message handler is set up in FCM config service
-    // }
+    // Initialize Firebase (required for notifications)
+    if (!kIsWeb) {
+      try {
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
+        debugPrint('✅ Firebase initialized');
+      } catch (e) {
+        debugPrint('⚠️ Firebase initialization failed: $e');
+        // Continue without Firebase - notifications will be disabled
+      }
+    }
     
     // Placeholder Supabase initialization; replace with your actual URL and anon key.
     await Supabase.initialize(
@@ -51,20 +60,28 @@ Future<void> main() async {
     );
     debugPrint('✅ Supabase initialized');
     
-    // Initialize services with error handling
+    // Initialize services with error handling (only if Firebase is available)
     try {
-      await NotificationService().initialize();
-      debugPrint('✅ Notification service initialized');
+      // Check if Firebase is initialized before attempting to use notification services
+      bool firebaseAvailable = false;
+      try {
+        Firebase.app(); // This will throw if Firebase is not initialized
+        firebaseAvailable = true;
+      } catch (e) {
+        debugPrint('⚠️ Firebase not available, skipping Firebase-dependent services');
+      }
+      
+      if (firebaseAvailable) {
+        await NotificationService().initialize();
+        debugPrint('✅ Notification service initialized');
+        
+        await FCMConfigService().configure();
+        debugPrint('✅ FCM service configured');
+      } else {
+        debugPrint('⚠️ Skipping notification services - Firebase not available');
+      }
     } catch (e) {
-      debugPrint('⚠️ Notification service failed to initialize: $e');
-    }
-    
-    // Configure FCM
-    try {
-      await FCMConfigService().configure();
-      debugPrint('✅ FCM service configured');
-    } catch (e) {
-      debugPrint('⚠️ FCM service failed to configure: $e');
+      debugPrint('⚠️ Service initialization failed: $e');
     }
     
     debugPrint('🎉 Starting app with providers...');
@@ -92,8 +109,13 @@ class MyApp extends ConsumerWidget {
       final isDark = ref.watch(themeDarkProvider);
       debugPrint('🎨 Theme loaded: ${isDark ? 'dark' : 'light'}');
       
-      _initFcm();
-      _setupNotificationNavigation();
+      // Initialize FCM and notifications safely
+      try {
+        _initFcm();
+        _setupNotificationNavigation();
+      } catch (e) {
+        debugPrint('⚠️ Error setting up notifications: $e');
+      }
       
       debugPrint('🛤️ Building MaterialApp...');
       
@@ -216,15 +238,22 @@ Future<void> _initFcm() async {
 /// Setup navigation handling for notifications
 void _setupNotificationNavigation() {
   try {
-    // Listen to notification stream for in-app navigation
-    final notificationService = NotificationService();
-    notificationService.notificationStream?.listen((notification) {
-      // Handle notification tap navigation
-      ErrorHandlerService.handleSilently(() {
-        // Navigation logic would go here
-        // For example: navigatorKey.currentState?.pushNamed(route);
+    // Check if Firebase is available before using notification service
+    try {
+      Firebase.app(); // This will throw if Firebase is not initialized
+      
+      // Listen to notification stream for in-app navigation
+      final notificationService = NotificationService();
+      notificationService.notificationStream?.listen((notification) {
+        // Handle notification tap navigation
+        ErrorHandlerService.handleSilently(() {
+          // Navigation logic would go here
+          // For example: navigatorKey.currentState?.pushNamed(route);
+        });
       });
-    });
+    } catch (e) {
+      debugPrint('⚠️ Firebase not available, skipping notification navigation setup');
+    }
   } catch (e) {
     debugPrint('⚠️ Error setting up notification navigation: $e');
   }

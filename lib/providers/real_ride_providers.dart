@@ -11,10 +11,25 @@ final userRidesProvider = FutureProvider<List<Ride>>((ref) async {
   if (user == null) return [];
   
   try {
-    // Get rides for the current user
+    // Get rides for the current user with driver information
     final ridesData = await supabase
         .from('rides')
-        .select('*, drivers(*)')
+        .select('''
+          *,
+          drivers(
+            id,
+            name,
+            phone,
+            vehicle_type,
+            vehicle_number,
+            vehicle_make,
+            vehicle_model,
+            vehicle_plate,
+            rating,
+            is_online,
+            is_available
+          )
+        ''')
         .eq('passenger_id', user.id)
         .order('created_at', ascending: false)
         .limit(20);
@@ -27,7 +42,9 @@ final userRidesProvider = FutureProvider<List<Ride>>((ref) async {
         pickupLocation: rideData['pickup_address'] ?? 'Unknown Location',
         dropoffLocation: rideData['destination_address'] ?? 'Unknown Destination',
         driverName: driver?['name'] ?? rideData['driver_name'] ?? 'Unknown Driver',
-        driverCar: driver?['vehicle_info'] ?? '${driver?['vehicle_make']} ${driver?['vehicle_model']} - ${driver?['vehicle_plate']}' ?? 'Unknown Vehicle',
+        driverCar: driver != null 
+            ? '${driver['vehicle_make'] ?? driver['vehicle_type'] ?? 'Unknown'} ${driver['vehicle_model'] ?? ''} - ${driver['vehicle_plate'] ?? driver['vehicle_number'] ?? 'Unknown'}'
+            : 'Unknown Vehicle',
         fare: (rideData['fare'] as num?)?.toDouble() ?? 0.0,
         status: _mapStatus(rideData['status']),
         dateTime: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
@@ -171,7 +188,22 @@ class RideDataService {
     try {
       final ridesData = await _client
           .from('rides')
-          .select('*, drivers(*)')
+          .select('''
+            *,
+            drivers(
+              id,
+              name,
+              phone,
+              vehicle_type,
+              vehicle_number,
+              vehicle_make,
+              vehicle_model,
+              vehicle_plate,
+              rating,
+              is_online,
+              is_available
+            )
+          ''')
           .eq('passenger_id', user.id)
           .order('created_at', ascending: false)
           .limit(limit);
@@ -184,7 +216,9 @@ class RideDataService {
           pickupLocation: rideData['pickup_address'] ?? 'Unknown Location',
           dropoffLocation: rideData['destination_address'] ?? 'Unknown Destination',
           driverName: driver?['name'] ?? rideData['driver_name'] ?? 'Unknown Driver',
-          driverCar: driver?['vehicle_info'] ?? '${driver?['vehicle_make']} ${driver?['vehicle_model']} - ${driver?['vehicle_plate']}' ?? 'Unknown Vehicle',
+          driverCar: driver != null 
+              ? '${driver['vehicle_make'] ?? driver['vehicle_type'] ?? 'Unknown'} ${driver['vehicle_model'] ?? ''} - ${driver['vehicle_plate'] ?? driver['vehicle_number'] ?? 'Unknown'}'
+              : 'Unknown Vehicle',
           fare: (rideData['fare'] as num?)?.toDouble() ?? 0.0,
           status: _mapStatus(rideData['status']),
           dateTime: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
@@ -200,7 +234,22 @@ class RideDataService {
     try {
       final rideData = await _client
           .from('rides')
-          .select('*, drivers(*)')
+          .select('''
+            *,
+            drivers(
+              id,
+              name,
+              phone,
+              vehicle_type,
+              vehicle_number,
+              vehicle_make,
+              vehicle_model,
+              vehicle_plate,
+              rating,
+              is_online,
+              is_available
+            )
+          ''')
           .eq('id', rideId)
           .single();
       
@@ -211,7 +260,9 @@ class RideDataService {
         pickupLocation: rideData['pickup_address'] ?? 'Unknown Location',
         dropoffLocation: rideData['destination_address'] ?? 'Unknown Destination',
         driverName: driver?['name'] ?? rideData['driver_name'] ?? 'Unknown Driver',
-        driverCar: driver?['vehicle_info'] ?? '${driver?['vehicle_make']} ${driver?['vehicle_model']} - ${driver?['vehicle_plate']}' ?? 'Unknown Vehicle',
+        driverCar: driver != null 
+            ? '${driver['vehicle_make'] ?? driver['vehicle_type'] ?? 'Unknown'} ${driver['vehicle_model'] ?? ''} - ${driver['vehicle_plate'] ?? driver['vehicle_number'] ?? 'Unknown'}'
+            : 'Unknown Vehicle',
         fare: (rideData['fare'] as num?)?.toDouble() ?? 0.0,
         status: _mapStatus(rideData['status']),
         dateTime: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),

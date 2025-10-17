@@ -1,10 +1,16 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/ride_service.dart';
+import '../services/driver_status_service.dart';
 
 // Provider for ride service
 final rideServiceProvider = Provider<RideService>((ref) {
   return RideService(Supabase.instance.client);
+});
+
+// Provider for driver status service
+final driverStatusServiceProvider = Provider<DriverStatusService>((ref) {
+  return DriverStatusService(Supabase.instance.client);
 });
 
 // Provider for current ride ID
@@ -92,23 +98,45 @@ class RideRealtimeNotifier extends StateNotifier<RideRealtimeState> {
   void _subscribeToRideUpdates(String rideId) {
     // Subscribe to ride status changes
     _rideService.subscribeToRideStatus(rideId).listen(
-      (rideDataList) {
+      (rideDataList) async {
         if (rideDataList.isNotEmpty) {
           final rideData = rideDataList.first;
           final rideStatus = rideData['status'] as String;
           Map<String, dynamic>? driver;
           
           if (rideData['driver_id'] != null) {
-            // If there's a driver assigned, we should fetch driver details
-            // For now, we'll create a basic driver object
-            driver = {
-              'id': rideData['driver_id'],
-              'name': 'Alex Johnson', // This should be fetched from drivers table
-              'phone': '+32456789012',
-              'vehicle_type': 'Tesla Model 3',
-              'vehicle_number': '1-ABC-123',
-              'rating': 4.8,
-            };
+            // Fetch driver details from drivers table
+            try {
+              final driverResponse = await Supabase.instance.client
+                  .from('drivers')
+                  .select('*')
+                  .eq('id', rideData['driver_id'])
+                  .single();
+              
+              driver = {
+                'id': driverResponse['id'],
+                'name': driverResponse['name'] ?? 'Unknown Driver',
+                'phone': driverResponse['phone'] ?? '',
+                'vehicle_type': driverResponse['vehicle_type'] ?? 'Unknown Vehicle',
+                'vehicle_number': driverResponse['vehicle_number'] ?? '',
+                'rating': driverResponse['rating']?.toDouble() ?? 4.5,
+                'vehicle_make': driverResponse['vehicle_make'] ?? '',
+                'vehicle_model': driverResponse['vehicle_model'] ?? '',
+                'vehicle_plate': driverResponse['vehicle_plate'] ?? '',
+                'is_online': driverResponse['is_online'] ?? false,
+                'is_available': driverResponse['is_available'] ?? false,
+              };
+            } catch (e) {
+              // Fallback driver data if fetch fails
+              driver = {
+                'id': rideData['driver_id'],
+                'name': 'Driver',
+                'phone': '',
+                'vehicle_type': 'Vehicle',
+                'vehicle_number': '',
+                'rating': 4.5,
+              };
+            }
           }
 
           state = state.copyWith(
