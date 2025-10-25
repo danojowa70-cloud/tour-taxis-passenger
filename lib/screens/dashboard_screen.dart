@@ -62,6 +62,11 @@ class DashboardScreen extends ConsumerWidget {
     final greeting = ref.watch(greetingProvider);
     final userName = ref.watch(userDisplayNameProvider);
     final userProfile = ref.watch(userProfileProvider);
+
+    // Use first name when possible for a friendlier greeting
+    final firstName = (userName.trim().split(' ').isNotEmpty)
+        ? userName.trim().split(' ').first
+        : userName;
     
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -82,14 +87,7 @@ class DashboardScreen extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                greeting,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                userName,
+                'Hi $firstName, $greeting 👋',
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: theme.colorScheme.onSurface,

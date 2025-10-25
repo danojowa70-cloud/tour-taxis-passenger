@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/ride.dart';
+import '../models/location.dart';
+import '../services/directions_service.dart';
+import '../services/fare_service.dart';
+import '../services/scheduled_rides_service.dart';
 
 // State class for schedule ride form
 class ScheduleRideState {
-  final String? pickupLocation;
-  final String? dropoffLocation;
+  final Location? pickupLocation;
+  final Location? dropoffLocation;
   final DateTime? selectedDate;
   final TimeOfDay? selectedTime;
+  final double? estimatedFare;
+  final int? distanceMeters;
+  final int? durationSeconds;
   final bool isLoading;
   final String? error;
 
@@ -16,15 +23,21 @@ class ScheduleRideState {
     this.dropoffLocation,
     this.selectedDate,
     this.selectedTime,
+    this.estimatedFare,
+    this.distanceMeters,
+    this.durationSeconds,
     this.isLoading = false,
     this.error,
   });
 
   ScheduleRideState copyWith({
-    String? pickupLocation,
-    String? dropoffLocation,
+    Location? pickupLocation,
+    Location? dropoffLocation,
     DateTime? selectedDate,
     TimeOfDay? selectedTime,
+    double? estimatedFare,
+    int? distanceMeters,
+    int? durationSeconds,
     bool? isLoading,
     String? error,
   }) {
@@ -33,6 +46,9 @@ class ScheduleRideState {
       dropoffLocation: dropoffLocation ?? this.dropoffLocation,
       selectedDate: selectedDate ?? this.selectedDate,
       selectedTime: selectedTime ?? this.selectedTime,
+      estimatedFare: estimatedFare ?? this.estimatedFare,
+      distanceMeters: distanceMeters ?? this.distanceMeters,
+      durationSeconds: durationSeconds ?? this.durationSeconds,
       isLoading: isLoading ?? this.isLoading,
       error: error ?? this.error,
     );
@@ -61,12 +77,49 @@ class ScheduleRideState {
 class ScheduleRideNotifier extends StateNotifier<ScheduleRideState> {
   ScheduleRideNotifier() : super(const ScheduleRideState());
 
-  void setPickupLocation(String location) {
+  void setPickupLocation(Location location) {
     state = state.copyWith(pickupLocation: location, error: null);
+    _calculateFareIfPossible();
   }
 
-  void setDropoffLocation(String location) {
+  void setDropoffLocation(Location location) {
     state = state.copyWith(dropoffLocation: location, error: null);
+    _calculateFareIfPossible();
+  }
+
+  Future<void> _calculateFareIfPossible() async {
+    final pickup = state.pickupLocation;
+    final dropoff = state.dropoffLocation;
+    
+    if (pickup?.hasCoordinates == true && dropoff?.hasCoordinates == true) {
+      try {
+        final directionsService = DirectionsService('AIzaSyBRYPKaXlRhpzoAmM5-KrS2JaNDxAX_phw');
+        final fareService = FareService();
+        
+        final route = await directionsService.routeLatLng(
+          pickup!.latitude!,
+          pickup.longitude!,
+          dropoff!.latitude!,
+          dropoff.longitude!,
+        );
+        
+        if (route != null) {
+          final fare = fareService.estimate(
+            distanceMeters: route.distanceMeters,
+            durationSeconds: route.durationSeconds,
+          );
+          
+          state = state.copyWith(
+            estimatedFare: fare,
+            distanceMeters: route.distanceMeters.toInt(),
+            durationSeconds: route.durationSeconds.toInt(),
+          );
+        }
+      } catch (e) {
+        // Silently handle fare calculation errors
+        debugPrint('Failed to calculate fare: $e');
+      }
+    }
   }
 
   void setSelectedDate(DateTime date) {
@@ -106,8 +159,25 @@ class ScheduleRideNotifier extends StateNotifier<ScheduleRideState> {
       // Simulate API call
       await Future.delayed(const Duration(seconds: 2));
 
-      // Create scheduled ride (would be saved to database/API in real implementation)
-      // For now, just simulate the scheduling process
+      // Save scheduled ride to database/API with proper location coordinates
+      final scheduledRidesService = ScheduledRidesService();
+      
+      final success = await scheduledRidesService.scheduleRide(
+        pickupLocation: state.pickupLocation!,
+        dropoffLocation: state.dropoffLocation!,
+        scheduledDateTime: scheduledDateTime,
+        estimatedFare: state.estimatedFare ?? 0.0,
+        distanceMeters: state.distanceMeters,
+        durationSeconds: state.durationSeconds,
+      );
+      
+      if (!success) {
+        state = state.copyWith(
+          isLoading: false,
+          error: 'Failed to schedule ride. Please try again.',
+        );
+        return false;
+      }
       
       state = state.copyWith(isLoading: false);
       return true;
@@ -132,27 +202,8 @@ class ScheduledRidesNotifier extends StateNotifier<AsyncValue<List<Ride>>> {
 
   Future<void> _loadScheduledRides() async {
     try {
-      // Simulate loading scheduled rides from API/database
-      await Future.delayed(const Duration(seconds: 1));
-      
-      // Mock scheduled rides
-      _scheduledRides = [
-        Ride.scheduled(
-          id: '1',
-          pickupLocation: 'Home',
-          dropoffLocation: 'Office',
-          scheduledDateTime: DateTime.now().add(const Duration(hours: 2)),
-          fare: 300.0,
-        ),
-        Ride.scheduled(
-          id: '2',
-          pickupLocation: 'Mall',
-          dropoffLocation: 'Airport',
-          scheduledDateTime: DateTime.now().add(const Duration(days: 1)),
-          fare: 800.0,
-        ),
-      ];
-      
+      final scheduledRidesService = ScheduledRidesService();
+      _scheduledRides = await scheduledRidesService.getScheduledRides();
       state = AsyncValue.data(_scheduledRides);
     } catch (e) {
       state = AsyncValue.error(e, StackTrace.current);
@@ -174,11 +225,13 @@ class ScheduledRidesNotifier extends StateNotifier<AsyncValue<List<Ride>>> {
 
   Future<void> cancelScheduledRide(String rideId) async {
     try {
-      // In a real app, this would call API to cancel
-      await Future.delayed(const Duration(milliseconds: 500));
+      final scheduledRidesService = ScheduledRidesService();
+      final success = await scheduledRidesService.cancelScheduledRide(rideId);
       
-      _scheduledRides.removeWhere((ride) => ride.id == rideId);
-      state = AsyncValue.data([..._scheduledRides]);
+      if (success) {
+        _scheduledRides.removeWhere((ride) => ride.id == rideId);
+        state = AsyncValue.data([..._scheduledRides]);
+      }
     } catch (e) {
       state = AsyncValue.error(e, StackTrace.current);
     }

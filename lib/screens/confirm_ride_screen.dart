@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../providers/ride_flow_providers.dart';
 import '../providers/realtime_providers.dart';
+import '../providers/auth_providers.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../services/ride_service.dart';
 import '../services/fare_service.dart';
@@ -25,6 +26,11 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
     final flow = ref.watch(rideFlowProvider);
     final theme = Theme.of(context);
     final polyPoints = flow.polyline ?? [];
+    print('🗺️ ConfirmRide: Polyline has ${polyPoints.length} points');
+    if (polyPoints.isNotEmpty) {
+      print('🗺️ First point: ${polyPoints.first}');
+      print('🗺️ Last point: ${polyPoints.last}');
+    }
     final polyline = polyPoints
         .map((p) => LatLng(p[0], p[1]))
         .toList(growable: false);
@@ -166,26 +172,22 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
                 zoom: 12,
               ),
               polylines: {
-                // Main route polyline with enhanced styling
-                Polyline(
-                  polylineId: const PolylineId('route'),
-                  points: polyline,
-                  color: theme.colorScheme.primary,
-                  width: 8,
-                  startCap: Cap.roundCap,
-                  endCap: Cap.roundCap,
-                  jointType: JointType.round,
-                  patterns: [
-                    PatternItem.dot,
-                    PatternItem.gap(10),
-                  ],
-                ),
                 // Background polyline for better visibility
                 Polyline(
                   polylineId: const PolylineId('route_background'),
                   points: polyline,
                   color: theme.colorScheme.primary.withValues(alpha: 0.3),
-                  width: 12,
+                  width: 10,
+                  startCap: Cap.roundCap,
+                  endCap: Cap.roundCap,
+                  jointType: JointType.round,
+                ),
+                // Main route polyline
+                Polyline(
+                  polylineId: const PolylineId('route'),
+                  points: polyline,
+                  color: theme.colorScheme.primary,
+                  width: 6,
                   startCap: Cap.roundCap,
                   endCap: Cap.roundCap,
                   jointType: JointType.round,
@@ -440,8 +442,16 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
     final flow = ref.watch(rideFlowProvider);
     const fareService = FareService();
     
-    // Get all vehicle types and calculate fares for each
-    final vehicles = VehicleTypeInfo.getAllTypes().map((vehicleInfo) {
+    // Get only standard ride-hailing vehicles (exclude premium and cargo vehicles)
+    final standardVehicles = VehicleTypeInfo.getAllTypes().where((vehicleInfo) {
+      // Only include bike, sedan, and SUV for regular ride-hailing
+      return vehicleInfo.type == VehicleType.bike ||
+             vehicleInfo.type == VehicleType.sedan ||
+             vehicleInfo.type == VehicleType.suv;
+    }).toList();
+    
+    // Calculate fares for each standard vehicle type
+    final vehicles = standardVehicles.map((vehicleInfo) {
       double calculatedPrice = 0;
       
       if (flow.distanceMeters != null && flow.durationSeconds != null) {
@@ -791,9 +801,19 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
         );
       }
       
+      // Get user profile data
+      final userProfile = ref.read(userProfileProvider);
+      final userName = userProfile.value?['name'] ?? 
+                      Supabase.instance.client.auth.currentUser?.userMetadata?['full_name'] ?? 
+                      Supabase.instance.client.auth.currentUser?.email?.split('@')[0] ?? 
+                      'Passenger';
+      final userPhone = userProfile.value?['phone'] ?? 
+                       Supabase.instance.client.auth.currentUser?.phone ?? 
+                       '+1234567890';
+      
       final rideId = await service.createRide(
-        passengerName: 'John Doe', // In real app, get from user profile
-        passengerPhone: '+32456789012', // In real app, get from user profile
+        passengerName: userName,
+        passengerPhone: userPhone,
         pickupLat: pickupLatLng['lat']!,
         pickupLng: pickupLatLng['lng']!,
         pickupAddress: f.pickup ?? 'Tour & Taxis, Brussels',

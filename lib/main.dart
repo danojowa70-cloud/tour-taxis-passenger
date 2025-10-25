@@ -17,7 +17,6 @@ import 'screens/ride_details_screen.dart';
 import 'screens/payment_method_screen.dart';
 import 'screens/wallet_screen.dart';
 import 'screens/receipts_screen.dart';
-import 'screens/permissions_screen.dart';
 import 'screens/schedule_ride_screen.dart';
 import 'screens/boarding_pass_screen.dart';
 import 'screens/premium_booking_screen.dart';
@@ -171,9 +170,6 @@ class MyApp extends ConsumerWidget {
                 break;
               case '/receipts':
                 page = const ReceiptsScreen();
-                break;
-              case '/permissions':
-                page = const PermissionsScreen();
                 break;
               case '/schedule':
                 page = const ScheduleRideScreen();

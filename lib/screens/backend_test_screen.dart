@@ -14,7 +14,7 @@ class BackendTestScreen extends ConsumerStatefulWidget {
 class _BackendTestScreenState extends ConsumerState<BackendTestScreen> {
   String _healthStatus = 'Unknown';
   String _connectionStatus = 'Disconnected';
-  List<String> _logs = [];
+  final List<String> _logs = [];
 
   @override
   void initState() {

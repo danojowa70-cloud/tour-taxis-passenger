@@ -96,7 +96,31 @@ class ProfileScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(user?.email ?? 'Guest', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                        Consumer(
+                          builder: (context, ref, child) {
+                            final userProfile = ref.watch(userProfileProvider);
+                            return userProfile.when(
+                              data: (profile) {
+                                final name = profile?['name'] ?? 
+                                            user?.userMetadata?['full_name'] ?? 
+                                            user?.email?.split('@')[0] ?? 
+                                            'Guest';
+                                return Text(
+                                  name,
+                                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                                );
+                              },
+                              loading: () => Text(
+                                user?.email?.split('@')[0] ?? 'Loading...',
+                                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                              ),
+                              error: (_, __) => Text(
+                                user?.email ?? 'Guest',
+                                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                              ),
+                            );
+                          },
+                        ),
                         Text('Rides taken: ${rides.length}', style: TextStyle(color: subtle)),
                       ],
                     ),

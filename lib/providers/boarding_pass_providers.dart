@@ -78,12 +78,18 @@ class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>>
   }
 
   Future<void> _loadMockBoardingPasses() async {
+    // Get actual user name
+    final user = _supabase.auth.currentUser;
+    final userName = user?.userMetadata?['full_name'] ?? 
+                     user?.email?.split('@')[0] ?? 
+                     'Passenger';
+    
     // Mock boarding passes for development
     final mockPasses = [
       BoardingPass(
         id: '1',
         rideEventId: 'ride_123',
-        passengerName: 'John Doe',
+        passengerName: userName,
         bookingId: 'BP1234567890',
         vehicleType: PremiumVehicleType.privateJet,
         destination: 'Mombasa',
@@ -103,7 +109,7 @@ class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>>
       BoardingPass(
         id: '2',
         rideEventId: 'ride_456',
-        passengerName: 'John Doe',
+        passengerName: userName,
         bookingId: 'BP9876543210',
         vehicleType: PremiumVehicleType.chopper,
         destination: 'Kisumu',
@@ -140,8 +146,13 @@ class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>>
   }) async {
     try {
       final user = _supabase.auth.currentUser;
-      if (user == null) throw Exception('User not authenticated');
+      if (user == null) {
+        debugPrint('❌ BOARDING PASS ERROR: User not authenticated');
+        throw Exception('User not authenticated');
+      }
 
+      debugPrint('🎫 Creating boarding pass for user: ${user.id}');
+      
       final boardingPass = BoardingPass(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
         rideEventId: rideEventId,
@@ -167,20 +178,44 @@ class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>>
       final data = boardingPass.toJson();
       data['user_id'] = user.id; // Add user ID for the database
 
+      debugPrint('🚀 Attempting to insert boarding pass data:');
+      debugPrint('📝 Data keys: ${data.keys.join(', ')}');
+      debugPrint('🎯 Booking ID: ${data['booking_id']}');
+      debugPrint('✈️ Vehicle Type: ${data['vehicle_type']}');
+
       try {
-        await _supabase.from('boarding_passes').insert(data);
+        final response = await _supabase.from('boarding_passes').insert(data).select();
+        debugPrint('✅ Successfully inserted boarding pass to Supabase');
+        debugPrint('📄 Supabase response: $response');
       } catch (e) {
-        debugPrint('Failed to insert boarding pass to Supabase: $e');
-        // Continue with local storage for development
+        debugPrint('❌ SUPABASE INSERT ERROR: $e');
+        debugPrint('🔍 Error type: ${e.runtimeType}');
+        
+        // Try to get more specific error information
+        if (e.toString().contains('duplicate key')) {
+          debugPrint('🚫 Duplicate booking ID detected');
+          throw Exception('Booking ID already exists. Please try again.');
+        } else if (e.toString().contains('violates check constraint')) {
+          debugPrint('🚫 Data validation error');
+          throw Exception('Invalid data provided. Please check your input.');
+        } else if (e.toString().contains('relation "boarding_passes" does not exist')) {
+          debugPrint('🚫 Table does not exist');
+          throw Exception('Database table not found. Please contact support.');
+        } else {
+          debugPrint('🚫 Generic database error');
+          throw Exception('Failed to save booking: ${e.toString()}');
+        }
       }
 
       // Update local state
       final currentPasses = state.asData?.value ?? [];
       state = AsyncValue.data([boardingPass, ...currentPasses]);
 
+      debugPrint('✅ Boarding pass created successfully!');
       return boardingPass;
     } catch (error, stackTrace) {
-      debugPrint('Failed to create boarding pass: $error');
+      debugPrint('❌ CRITICAL ERROR creating boarding pass: $error');
+      debugPrint('📊 Stack trace: $stackTrace');
       state = AsyncValue.error(error, stackTrace);
       return null;
     }

@@ -26,14 +26,32 @@ class _SignupScreenState extends State<SignupScreen> {
       if (name.isEmpty || email.isEmpty || password.isEmpty) {
         throw Exception('Name, email and password are required');
       }
-      await Supabase.instance.client.auth.signUp(
+      final authResponse = await Supabase.instance.client.auth.signUp(
         email: email,
         password: password,
         data: { 'full_name': name, 'phone': phone },
       );
+      
+      // Create passenger record in database
+      if (authResponse.user != null) {
+        try {
+          await Supabase.instance.client.from('passengers').upsert({
+            'auth_user_id': authResponse.user!.id,
+            'name': name,
+            'email': email,
+            'phone': phone,
+            'created_at': DateTime.now().toIso8601String(),
+          }, onConflict: 'auth_user_id');
+          debugPrint('✅ Passenger record created with name: $name');
+        } catch (e) {
+          debugPrint('⚠️ Failed to create passenger record: $e');
+          // Continue anyway - the auth metadata has the name
+        }
+      }
+      
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Signup successful. Please verify your email if required.')),
+        SnackBar(content: Text('Welcome $name! Your account has been created successfully.')),
       );
       Navigator.of(context).pushNamedAndRemoveUntil('/dashboard', (route) => false);
     } catch (e) {

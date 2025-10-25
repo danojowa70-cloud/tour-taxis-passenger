@@ -12,27 +12,55 @@ class DirectionsService {
   final String apiKey;
   DirectionsService(this.apiKey);
 
-  Future<DirectionsResult?> routeLatLng(double startLat, double startLng, double endLat, double endLng) async {
+  Future<DirectionsResult?> routeLatLng(double startLat, double startLng, double endLat, double endLng, {int retries = 2}) async {
     final uri = Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
       'origin': '$startLat,$startLng',
       'destination': '$endLat,$endLng',
       'key': apiKey,
       'mode': 'driving',
+      'alternatives': 'false',
+      'avoid': 'tolls',
+      'units': 'metric',
     });
-    final res = await http.get(uri);
-    if (res.statusCode != 200) return null;
-    final data = json.decode(res.body) as Map<String, dynamic>;
-    final routes = (data['routes'] as List<dynamic>? ?? []);
-    if (routes.isEmpty) return null;
-    final leg = routes.first['legs'][0];
-    final distanceMeters = (leg['distance']['value'] as num).toDouble();
-    final durationSeconds = (leg['duration']['value'] as num).toDouble();
-    final poly = routes.first['overview_polyline']['points'] as String;
-    return DirectionsResult(
-      distanceMeters: distanceMeters,
-      durationSeconds: durationSeconds,
-      polyline: _decodePolyline(poly),
-    );
+    for (int attempt = 0; attempt <= retries; attempt++) {
+      try {
+        final res = await http.get(uri).timeout(const Duration(seconds: 10));
+        if (res.statusCode != 200) {
+          if (attempt == retries) return null;
+          await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+          continue;
+        }
+        
+        final data = json.decode(res.body) as Map<String, dynamic>;
+        if (data['status'] != 'OK') {
+          if (attempt == retries) return null;
+          await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+          continue;
+        }
+        
+        final routes = (data['routes'] as List<dynamic>? ?? []);
+        if (routes.isEmpty) {
+          if (attempt == retries) return null;
+          await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+          continue;
+        }
+        final leg = routes.first['legs'][0];
+        final distanceMeters = (leg['distance']['value'] as num).toDouble();
+        final durationSeconds = (leg['duration']['value'] as num).toDouble();
+        final poly = routes.first['overview_polyline']['points'] as String;
+        
+        return DirectionsResult(
+          distanceMeters: distanceMeters,
+          durationSeconds: durationSeconds,
+          polyline: _decodePolyline(poly),
+        );
+        
+      } catch (e) {
+        if (attempt == retries) return null;
+        await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+      }
+    }
+    return null;
   }
 
   List<List<double>> _decodePolyline(String encoded) {

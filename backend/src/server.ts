@@ -6,6 +6,7 @@ import { env } from './config/env';
 import { logger } from './utils/logger';
 import { ridesRouter } from './routes/rides.routes';
 import { paymentsRouter } from './routes/payments.routes';
+import { boardingPassesRouter } from './routes/boarding-passes.routes';
 import { registerRideHandlers } from './socket/ride.handlers';
 
 const app = express();
@@ -15,6 +16,7 @@ app.use(express.json());
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/rides', ridesRouter);
 app.use('/api/payments', paymentsRouter);
+app.use('/api/boarding-passes', boardingPassesRouter);
 
 // Error handler
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

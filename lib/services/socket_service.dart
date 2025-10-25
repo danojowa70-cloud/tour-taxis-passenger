@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:socket_io_client/socket_io_client.dart' as io;
 
 class SocketService {
   static SocketService? _instance;
@@ -10,7 +10,7 @@ class SocketService {
   // Production backend URL - your deployed Render backend
   static const String _serverUrl = 'https://tourtaxi-unified-backend.onrender.com';
   
-  IO.Socket? _socket;
+  io.Socket? _socket;
   bool _isConnected = false;
   
   bool get isConnected => _isConnected;
@@ -20,7 +20,7 @@ class SocketService {
     try {
       debugPrint('🔌 Connecting to Socket.IO server: $_serverUrl');
       
-      _socket = IO.io(_serverUrl, IO.OptionBuilder()
+      _socket = io.io(_serverUrl, io.OptionBuilder()
         .setTransports(['websocket'])
         .enableAutoConnect()
         .enableForceNew()

@@ -347,15 +347,22 @@ class DeliveryListNotifier extends StateNotifier<AsyncValue<List<DeliveryBooking
   }
 
   Future<void> _loadMockDeliveries() async {
+    // Get actual user name
+    final user = _supabase.auth.currentUser;
+    final userName = user?.userMetadata?['full_name'] ?? 
+                     user?.email?.split('@')[0] ?? 
+                     'User';
+    final userEmail = user?.email ?? 'user@example.com';
+    
     // Mock delivery data
     final mockDeliveries = [
       DeliveryBooking(
         id: '1',
         trackingNumber: 'TT1234567890',
-        sender: const ContactDetails(
-          name: 'John Doe',
+        sender: ContactDetails(
+          name: userName,
           phone: '+254123456789',
-          email: 'john@example.com',
+          email: userEmail,
           address: '123 Main St',
           city: 'Nairobi',
           state: 'Nairobi',

@@ -357,11 +357,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
   
-  /// Use current GPS location for pickup
+  /// Use current GPS location for pickup with automatic permission handling
   void _useCurrentLocation() async {
-    debugPrint('🗺 Using current GPS location for pickup');
+    debugPrint('🗺️ Using current GPS location for pickup');
+    
+    // Check if location services are enabled
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _showLocationServiceDialog();
+      return;
+    }
+    
+    // Check and request permissions
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        _showPermissionDeniedDialog();
+        return;
+      }
+    }
+    
+    if (permission == LocationPermission.deniedForever) {
+      _showPermissionDeniedForeverDialog();
+      return;
+    }
     
     try {
+      // Show loading state
+      setState(() {
+        _pickupController.text = 'Getting location...';
+      });
+      
       // Get fresh location
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
@@ -377,11 +404,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _updateMapMarkers();
       if (mounted) {
         FocusScope.of(context).unfocus();
+        
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📍 Current location set as pickup'),
+            duration: Duration(seconds: 2),
+            backgroundColor: Colors.green,
+          ),
+        );
       }
       
       debugPrint('✅ Current location set for pickup');
     } catch (e) {
       debugPrint('⚠️ Error getting current location: $e');
+      if (mounted) {
+        setState(() {
+          _pickupController.text = 'From';
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Unable to get location. Please check GPS settings.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     }
   }
   
@@ -1378,6 +1426,138 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
       ),
+    );
+  }
+  
+  /// Show dialog when location services are disabled
+  void _showLocationServiceDialog() {
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        final theme = Theme.of(context);
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Icon(
+                Icons.location_off,
+                color: theme.colorScheme.primary,
+                size: 24,
+              ),
+              const SizedBox(width: 12),
+              const Text('Enable Location Services'),
+            ],
+          ),
+          content: const Text(
+            'Location services are turned off. To get your current location, please enable GPS in your device settings.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await Geolocator.openLocationSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+  
+  /// Show dialog when location permission is denied
+  void _showPermissionDeniedDialog() {
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        final theme = Theme.of(context);
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Icon(
+                Icons.location_disabled,
+                color: theme.colorScheme.error,
+                size: 24,
+              ),
+              const SizedBox(width: 12),
+              const Text('Location Permission'),
+            ],
+          ),
+          content: const Text(
+            'Location permission is required to get your current location. Please allow location access when prompted.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _useCurrentLocation(); // Try again
+              },
+              child: const Text('Try Again'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+  
+  /// Show dialog when location permission is permanently denied
+  void _showPermissionDeniedForeverDialog() {
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        final theme = Theme.of(context);
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Icon(
+                Icons.block,
+                color: theme.colorScheme.error,
+                size: 24,
+              ),
+              const SizedBox(width: 12),
+              const Text('Permission Required'),
+            ],
+          ),
+          content: const Text(
+            'Location permission has been permanently denied. To use your current location, please enable it manually in the app settings.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await Geolocator.openAppSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
     );
   }
 }

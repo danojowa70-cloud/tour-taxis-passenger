@@ -78,10 +78,19 @@ class SearchDestinationScreen extends ConsumerWidget {
                                       polyline: route.polyline,
                                       estimatedFare: fare,
                                     );
+                                    if (context.mounted) {
+                                      Navigator.of(context).pushNamed('/confirm');
+                                    }
+                                  } else {
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Unable to find route. Please try a different destination.'),
+                                          backgroundColor: Colors.orange,
+                                        ),
+                                      );
+                                    }
                                   }
-                                }
-                                if (context.mounted) {
-                                  Navigator.of(context).pushNamed('/confirm');
                                 }
                               },
                             ),

@@ -478,7 +478,6 @@ class PermissionCheckResult {
   bool isGranted(AppPermissionType permission) {
     return permissions[permission] == PermissionStatus.granted;
   }
-
   bool isDenied(AppPermissionType permission) {
     return permissions[permission] == PermissionStatus.denied;
   }

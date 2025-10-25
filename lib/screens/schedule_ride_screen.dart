@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/schedule_providers.dart';
+import '../models/location.dart';
+import '../screens/location_picker_screen.dart';
 
 class ScheduleRideScreen extends ConsumerWidget {
   const ScheduleRideScreen({super.key});
@@ -50,7 +52,7 @@ class ScheduleRideScreen extends ConsumerWidget {
                       
                       // Fare estimation
                       if (scheduleState.canSchedule)
-                        _buildFareEstimation(context, theme),
+                        _buildFareEstimation(context, theme, scheduleState),
                       
                       const SizedBox(height: 24),
                       
@@ -150,7 +152,7 @@ class ScheduleRideScreen extends ConsumerWidget {
         _LocationInputCard(
           title: 'Pickup Location',
           subtitle: 'Where should we pick you up?',
-          value: scheduleState.pickupLocation,
+          value: scheduleState.pickupLocation?.displayName,
           icon: Icons.my_location,
           onTap: () => _selectLocation(context, ref, true),
         ),
@@ -161,7 +163,7 @@ class ScheduleRideScreen extends ConsumerWidget {
         _LocationInputCard(
           title: 'Dropoff Location',
           subtitle: 'Where are you going?',
-          value: scheduleState.dropoffLocation,
+          value: scheduleState.dropoffLocation?.displayName,
           icon: Icons.location_on,
           onTap: () => _selectLocation(context, ref, false),
         ),
@@ -210,7 +212,7 @@ class ScheduleRideScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildFareEstimation(BuildContext context, ThemeData theme) {
+  Widget _buildFareEstimation(BuildContext context, ThemeData theme, ScheduleRideState scheduleState) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -234,7 +236,9 @@ class ScheduleRideScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                'KSh 300 - 450',
+                scheduleState.estimatedFare != null
+                    ? 'KSh ${scheduleState.estimatedFare!.toStringAsFixed(0)}'
+                    : 'Calculating...',
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: theme.colorScheme.primary,
@@ -332,21 +336,18 @@ class ScheduleRideScreen extends ConsumerWidget {
   }
 
   Future<void> _selectLocation(BuildContext context, WidgetRef ref, bool isPickup) async {
-    // In a real app, this would open a location picker or search screen
-    final locations = [
-      'Home',
-      'Office',
-      'Mall',
-      'Airport',
-      'University',
-      'Hospital',
-      'City Center',
-      'Train Station',
-    ];
-
-    final selected = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => _LocationPickerSheet(locations: locations),
+    final currentLocation = isPickup 
+        ? ref.read(scheduleRideProvider).pickupLocation
+        : ref.read(scheduleRideProvider).dropoffLocation;
+    
+    final selected = await Navigator.of(context).push<Location>(
+      MaterialPageRoute(
+        builder: (context) => LocationPickerScreen(
+          title: isPickup ? 'Select Pickup Location' : 'Select Dropoff Location',
+          initialLocation: currentLocation,
+          showCurrentLocation: isPickup,
+        ),
+      ),
     );
 
     if (selected != null) {
@@ -596,68 +597,3 @@ class _DateTimeCard extends StatelessWidget {
   }
 }
 
-class _LocationPickerSheet extends StatelessWidget {
-  final List<String> locations;
-
-  const _LocationPickerSheet({required this.locations});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.scaffoldBackgroundColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(
-                  color: theme.colorScheme.outline.withValues(alpha: 0.2),
-                ),
-              ),
-            ),
-            child: Row(
-              children: [
-                Text(
-                  'Select Location',
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const Spacer(),
-                IconButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-          ),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: locations.length,
-              itemBuilder: (context, index) {
-                final location = locations[index];
-                return ListTile(
-                  leading: Icon(
-                    Icons.location_on_outlined,
-                    color: theme.colorScheme.primary,
-                  ),
-                  title: Text(location),
-                  onTap: () => Navigator.of(context).pop(location),
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 20),
-        ],
-      ),
-    );
-  }
-}

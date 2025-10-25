@@ -149,8 +149,9 @@ class VehicleTypeInfo {
   }
 
   static List<VehicleTypeInfo> getStandardTypes() {
+    // Standard ride types exclude both premium and delivery vehicles
     return _vehicleInfo.values
-        .where((info) => !isPremiumVehicle(info.type))
+        .where((info) => !isPremiumVehicle(info.type) && !isDeliveryVehicle(info.type))
         .toList();
   }
 
