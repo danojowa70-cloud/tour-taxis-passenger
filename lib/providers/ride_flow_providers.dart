@@ -10,9 +10,10 @@ class RideFlowState {
   final double? durationSeconds;
   final List<List<double>>? polyline;
   final String? rideId;
-  const RideFlowState({this.pickup, this.destination, this.estimatedFare, this.pickupLatLng, this.destinationLatLng, this.distanceMeters, this.durationSeconds, this.polyline, this.rideId});
+  final String? vehicleType; // Selected vehicle type from home screen
+  const RideFlowState({this.pickup, this.destination, this.estimatedFare, this.pickupLatLng, this.destinationLatLng, this.distanceMeters, this.durationSeconds, this.polyline, this.rideId, this.vehicleType});
 
-  RideFlowState copyWith({String? pickup, String? destination, double? estimatedFare, Map<String, double>? pickupLatLng, Map<String, double>? destinationLatLng, double? distanceMeters, double? durationSeconds, List<List<double>>? polyline, String? rideId}) {
+  RideFlowState copyWith({String? pickup, String? destination, double? estimatedFare, Map<String, double>? pickupLatLng, Map<String, double>? destinationLatLng, double? distanceMeters, double? durationSeconds, List<List<double>>? polyline, String? rideId, String? vehicleType}) {
     return RideFlowState(
       pickup: pickup ?? this.pickup,
       destination: destination ?? this.destination,
@@ -23,6 +24,7 @@ class RideFlowState {
       durationSeconds: durationSeconds ?? this.durationSeconds,
       polyline: polyline ?? this.polyline,
       rideId: rideId ?? this.rideId,
+      vehicleType: vehicleType ?? this.vehicleType,
     );
   }
 }
@@ -38,6 +40,11 @@ class RideFlowNotifier extends StateNotifier<RideFlowState> {
     }
   }
   void reset() => state = const RideFlowState();
+  
+  // Force clear all ride state including ride ID
+  void clearAll() {
+    state = const RideFlowState();
+  }
 
   void updateFrom({
     String? pickup,
@@ -48,6 +55,7 @@ class RideFlowNotifier extends StateNotifier<RideFlowState> {
     double? distanceMeters,
     double? durationSeconds,
     List<List<double>>? polyline,
+    String? vehicleType,
   }) {
     state = state.copyWith(
       pickup: pickup,
@@ -58,6 +66,7 @@ class RideFlowNotifier extends StateNotifier<RideFlowState> {
       distanceMeters: distanceMeters,
       durationSeconds: durationSeconds,
       polyline: polyline,
+      vehicleType: vehicleType,
     );
   }
 

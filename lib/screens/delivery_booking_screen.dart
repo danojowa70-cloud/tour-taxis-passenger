@@ -19,6 +19,20 @@ class DeliveryBookingScreen extends ConsumerWidget {
         backgroundColor: theme.scaffoldBackgroundColor,
         elevation: 0,
         scrolledUnderElevation: 0,
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: IconButton(
+              onPressed: () => Navigator.pushNamed(context, '/delivery-tracking'),
+              icon: const Icon(Icons.track_changes),
+              tooltip: 'Track Deliveries',
+              style: IconButton.styleFrom(
+                backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.1),
+                foregroundColor: theme.colorScheme.primary,
+              ),
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -32,6 +46,11 @@ class DeliveryBookingScreen extends ConsumerWidget {
                   children: [
                     // Header
                     _buildHeader(context, theme),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // Track Deliveries Button
+                    _buildTrackDeliveriesButton(context, ref, theme),
                     
                     const SizedBox(height: 32),
                     
@@ -65,12 +84,6 @@ class DeliveryBookingScreen extends ConsumerWidget {
                     
                     const SizedBox(height: 24),
                     
-                    // Cost Estimation
-                    if (bookingState.estimatedCost != null)
-                      _buildCostEstimation(context, theme, bookingState),
-                    
-                    const SizedBox(height: 24),
-                    
                     // Error Message
                     if (bookingState.error != null)
                       _buildErrorMessage(context, theme, bookingState.error!),
@@ -85,6 +98,76 @@ class DeliveryBookingScreen extends ConsumerWidget {
           // Book Button
           _buildBookButton(context, ref, theme, bookingState),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTrackDeliveriesButton(BuildContext context, WidgetRef ref, ThemeData theme) {
+    final deliveries = ref.watch(activeDeliveriesProvider);
+    
+    return GestureDetector(
+      onTap: () => Navigator.pushNamed(context, '/delivery-tracking'),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.green.withValues(alpha: 0.1),
+              Colors.teal.withValues(alpha: 0.05),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: Colors.green.withValues(alpha: 0.3),
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(
+                Icons.track_changes,
+                color: Colors.white,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Track My Deliveries',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green[800],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    deliveries.isEmpty 
+                        ? 'No active deliveries'
+                        : '${deliveries.length} active ${deliveries.length == 1 ? "delivery" : "deliveries"}',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: Colors.green[700],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.arrow_forward_ios,
+              size: 16,
+              color: Colors.green[700],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -419,74 +502,6 @@ class DeliveryBookingScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildCostEstimation(BuildContext context, ThemeData theme, DeliveryBookingState bookingState) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            Colors.green.withValues(alpha: 0.1),
-            Colors.green.withValues(alpha: 0.05),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.green.withValues(alpha: 0.2),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.account_balance_wallet,
-                color: Colors.green,
-                size: 24,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Delivery Cost Estimate',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: Colors.green[700],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          
-          Text(
-            'KSh ${bookingState.estimatedCost!.toStringAsFixed(0)}',
-            style: theme.textTheme.headlineMedium?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: Colors.green[700],
-            ),
-          ),
-          const SizedBox(height: 8),
-          
-          if (bookingState.estimatedDelivery != null) ...[
-            Text(
-              'Estimated delivery: ${_formatDate(bookingState.estimatedDelivery!)}',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: Colors.green[600],
-              ),
-            ),
-            const SizedBox(height: 4),
-          ],
-          
-          Text(
-            '${bookingState.selectedPriority.name.toUpperCase()} • ${bookingState.selectedVehicleType?.name.toUpperCase()}',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: Colors.green[600],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildErrorMessage(BuildContext context, ThemeData theme, String error) {
     return Container(
@@ -661,45 +676,137 @@ class DeliveryBookingScreen extends ConsumerWidget {
         .confirmBooking();
     
     if (delivery != null && context.mounted) {
-      // Show success dialog
+      // Show success dialog matching design
       await showDialog(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Booking Confirmed! 📦'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Your delivery has been booked successfully.'),
-              const SizedBox(height: 16),
-              Text(
-                'Tracking Number: ${delivery.trackingNumber}',
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text('You can track your delivery progress from the dashboard.'),
-            ],
+        barrierDismissible: false,
+        builder: (context) => Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
           ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                Navigator.of(context).pop(); // Go back to dashboard
-              },
-              child: const Text('Continue'),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Title
+                const Text(
+                  'Booking Confirmed!',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                
+                // Icon
+                const Text(
+                  '📦',
+                  style: TextStyle(fontSize: 48),
+                ),
+                const SizedBox(height: 16),
+                
+                // Message
+                const Text(
+                  'Your delivery has been booked successfully.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 16),
+                ),
+                const SizedBox(height: 16),
+                
+                // Tracking Number
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Tracking Number:',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        delivery.trackingNumber,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                const Text(
+                  'You can track your delivery progress from the dashboard.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                
+                // Buttons
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          Navigator.of(context).pop(); // Go back to dashboard
+                        },
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Continue',
+                          style: TextStyle(fontSize: 16),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          Navigator.of(context).pop();
+                          // Navigate to tracking screen
+                          Navigator.pushNamed(
+                            context,
+                            '/delivery-tracking',
+                            arguments: delivery.id,
+                          );
+                        },
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          backgroundColor: Colors.black,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Track Delivery',
+                          style: TextStyle(fontSize: 16),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                // Navigate to tracking screen (would implement this)
-                Navigator.of(context).pop();
-              },
-              child: const Text('Track Delivery'),
-            ),
-          ],
+          ),
         ),
       );
     }

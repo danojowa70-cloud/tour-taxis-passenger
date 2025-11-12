@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -8,6 +9,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../providers/home_providers.dart';
 import '../providers/ride_flow_providers.dart';
 import '../services/fare_service.dart';
@@ -17,16 +19,25 @@ import '../models/vehicle_type.dart';
 class PlacePrediction {
   final String placeId;
   final String description;
+  final String mainText;
+  final String secondaryText;
   
   PlacePrediction({
     required this.placeId,
     required this.description,
+    required this.mainText,
+    required this.secondaryText,
   });
   
   factory PlacePrediction.fromJson(Map<String, dynamic> json) {
+    // Get structured formatting for better display
+    final structuredFormatting = json['structured_formatting'] as Map<String, dynamic>?;
+    
     return PlacePrediction(
       placeId: json['place_id'] ?? '',
       description: json['description'] ?? '',
+      mainText: structuredFormatting?['main_text'] ?? json['description'] ?? '',
+      secondaryText: structuredFormatting?['secondary_text'] ?? '',
     );
   }
 }
@@ -53,6 +64,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _isLocationInputExpanded = false;
   String _selectedVehicle = '';
   String _currentLocationName = 'Current Location';
+  bool _locationPermissionGranted = false;
   
   // Autocomplete suggestions
   List<PlacePrediction> _pickupSuggestions = [];
@@ -63,19 +75,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   // Google Maps controller and markers
   GoogleMapController? _mapController;
   final Set<Marker> _markers = {};
+  final Set<Marker> _driverMarkers = {};
+  final Set<Polyline> _driverPolylines = {};
+  final Map<String, LatLng> _driverPositions = {};
+  final Map<String, Timer> _driverAnimTimers = {};
   LatLng? _pickupLocation;
   LatLng? _destinationLocation;
   
   // Default location (Brussels, Belgium)
   static const LatLng _defaultLocation = LatLng(50.8503, 4.3517);
   
-  // Timer for search debouncing
+  // Timer for search debouncing and driver updates
   Timer? _searchTimer;
+  Timer? _driverUpdateTimer;
 
   @override
   void initState() {
     super.initState();
     debugPrint('🏠 HomeScreen initializing...');
+    
+    // IMPORTANT: Clear any stale ride state from previous session
+    // This prevents the "ghost ride" bug where old ride data persists
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _clearStaleRideState();
+    });
     
     // Set default pickup location text
     _pickupController.text = 'Current Location';
@@ -86,6 +109,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     
     // Load current location
     _loadCurrentLocationAndSetupMap();
+    
+    // Start loading nearby drivers
+    _startLoadingNearbyDrivers();
+  }
+  
+  /// Clear stale ride state on app restart/navigation
+  Future<void> _clearStaleRideState() async {
+    if (!mounted) return;
+    
+    try {
+      final currentRideId = ref.read(rideFlowProvider).rideId;
+      
+      // If there's a ride ID in state, check if it's still active
+      if (currentRideId != null && currentRideId.isNotEmpty) {
+        debugPrint('⚠️ Found existing ride ID in state: $currentRideId');
+        debugPrint('🧹 Clearing stale ride state to prevent ghost rides');
+        
+        // Clear the ride flow provider completely
+        ref.read(rideFlowProvider.notifier).clearAll();
+      }
+    } catch (e) {
+      debugPrint('Error clearing stale ride state: $e');
+    }
   }
 
   @override
@@ -96,8 +142,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _destinationFocusNode.dispose();
     _pickupFocusNode.dispose();
     
-    // Cancel any pending search timer
+    // Cancel any pending timers
     _searchTimer?.cancel();
+    _driverUpdateTimer?.cancel();
     
     super.dispose();
   }
@@ -113,6 +160,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
           debugPrint('⚠️ Location permissions denied');
+          setState(() => _locationPermissionGranted = false);
           _setDefaultLocation();
           return;
         }
@@ -120,9 +168,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       
       if (permission == LocationPermission.deniedForever) {
         debugPrint('⚠️ Location permissions permanently denied');
+        setState(() => _locationPermissionGranted = false);
         _setDefaultLocation();
         return;
       }
+      
+      // Permission granted
+      setState(() => _locationPermissionGranted = true);
       
       // Get current position
       final position = await Geolocator.getCurrentPosition(
@@ -161,21 +213,95 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// Reverse geocode current location to get readable address
   Future<void> _reverseGeocodeCurrentLocation(double lat, double lng) async {
     try {
-      // For demo purposes, using a simple location name
-      // In production, you would use Google Places API reverse geocoding
-      final locationName = 'Near ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
+      // Call Google Geocoding API to get address from coordinates
+      final url = 'https://maps.googleapis.com/maps/api/geocode/json'
+          '?latlng=$lat,$lng'
+          '&key=$_googleMapsApiKey';
       
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        
+        if (data['status'] == 'OK' && data['results'] != null && (data['results'] as List).isNotEmpty) {
+          // Get the first result (most accurate)
+          final firstResult = data['results'][0];
+          final formattedAddress = firstResult['formatted_address'] as String;
+          
+          // Try to get a shorter, more readable address
+          String locationName = formattedAddress;
+          
+          // Look for address components to create a better address
+          final components = firstResult['address_components'] as List?;
+          if (components != null && components.isNotEmpty) {
+            // Try to find route (street), neighborhood, and locality
+            String? route;
+            String? neighborhood;
+            String? sublocality;
+            String? locality;
+            String? premise;
+            
+            for (var component in components) {
+              final types = component['types'] as List?;
+              final longName = component['long_name'] as String?;
+              if (types != null && longName != null) {
+                if (types.contains('route')) {
+                  route = longName;
+                } else if (types.contains('premise') || types.contains('street_address')) {
+                  premise = longName;
+                } else if (types.contains('sublocality') || types.contains('sublocality_level_1')) {
+                  sublocality = longName;
+                } else if (types.contains('neighborhood')) {
+                  neighborhood = longName;
+                } else if (types.contains('locality')) {
+                  locality = longName;
+                }
+              }
+            }
+            
+            // Build address from most specific to least specific
+            // Priority: premise/street > route > sublocality > neighborhood > locality
+            if (premise != null && locality != null) {
+              locationName = '$premise, $locality';
+            } else if (route != null && (sublocality != null || locality != null)) {
+              final area = sublocality ?? locality;
+              locationName = '$route, $area';
+            } else if (route != null) {
+              locationName = route;
+            } else if (sublocality != null && locality != null) {
+              locationName = '$sublocality, $locality';
+            } else if (neighborhood != null && locality != null) {
+              locationName = '$neighborhood, $locality';
+            } else if (sublocality != null) {
+              locationName = sublocality;
+            } else if (neighborhood != null) {
+              locationName = neighborhood;
+            } else if (locality != null) {
+              locationName = locality;
+            }
+            // else: use formatted address (already set above)
+          }
+          
+          setState(() {
+            _currentLocationName = locationName;
+            _pickupController.text = locationName;
+          });
+          
+          debugPrint('✅ Location name: $locationName');
+          return;
+        }
+      }
+      
+      // Fallback if API call fails
+      throw Exception('Geocoding API returned no results');
+      
+    } catch (e) {
+      debugPrint('⚠️ Reverse geocoding failed: $e');
+      // Fallback to coordinates
+      final locationName = 'Near ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
       setState(() {
         _currentLocationName = locationName;
         _pickupController.text = locationName;
-      });
-      
-      debugPrint('✅ Location name: $locationName');
-    } catch (e) {
-      debugPrint('⚠️ Reverse geocoding failed: $e');
-      setState(() {
-        _currentLocationName = 'Current Location';
-        _pickupController.text = 'Current Location';
       });
     }
   }
@@ -240,7 +366,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           '&location=$location'
           '&radius=50000'
           '&language=en'
-          '&types=establishment|geocode'
+          '&components=country:in'
           '&key=$_googleMapsApiKey';
       
       final response = await http.get(Uri.parse(url));
@@ -462,6 +588,178 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
   
+  /// Start periodic loading of nearby available drivers
+  void _startLoadingNearbyDrivers() {
+    // Load immediately
+    _loadNearbyDrivers();
+    
+    // Then update every 10 seconds
+    _driverUpdateTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _loadNearbyDrivers();
+    });
+  }
+  
+  /// Load nearby available drivers from database
+  Future<void> _loadNearbyDrivers() async {
+    if (_pickupLocation == null) return;
+    
+    try {
+      debugPrint('🚕 Loading nearby drivers via RPC...');
+      
+      final drivers = await Supabase.instance.client
+          .rpc('get_nearby_drivers', params: {
+            'lat': _pickupLocation!.latitude,
+            'lng': _pickupLocation!.longitude,
+            'radius_km': 10.0,
+            'desired_vehicle': null,  // Show all vehicle types on map
+          });
+      
+      if (!mounted) return;
+      
+      final list = (drivers as List?) ?? [];
+      debugPrint('✅ Found ${list.length} nearby drivers');
+      
+      for (final d in list) {
+        final driverId = d['id'] as String;
+        final lat = (d['latitude'] as num?)?.toDouble();
+        final lng = (d['longitude'] as num?)?.toDouble();
+        final vehicleType = d['vehicle_type'] as String?;
+        final driverName = d['name'] as String?;
+        if (lat == null || lng == null) continue;
+        final newPos = LatLng(lat, lng);
+        final oldPos = _driverPositions[driverId] ?? newPos;
+        _driverPositions[driverId] = newPos;
+        
+        // Animate marker from oldPos to newPos
+        _animateDriverMarker(
+          driverId: driverId,
+          from: oldPos,
+          to: newPos,
+          vehicleType: vehicleType,
+          driverName: driverName,
+        );
+      }
+      
+      // Remove markers for drivers no longer present
+      final currentIds = list.map((d) => d['id'] as String).toSet();
+      _driverPositions.keys.where((id) => !currentIds.contains(id)).toList().forEach((id) {
+        _driverAnimTimers[id]?.cancel();
+        _driverAnimTimers.remove(id);
+        _driverPositions.remove(id);
+        _driverMarkers.removeWhere((m) => m.markerId.value == 'driver_$id');
+        _driverPolylines.removeWhere((p) => p.polylineId.value == 'trail_$id');
+      });
+
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('⚠️ Error loading nearby drivers: $e');
+    }
+  }
+  
+  /// Create custom vehicle marker icon (emoji-based) by vehicle type
+  Future<BitmapDescriptor> _createDriverVehicleIcon(String? vehicleType) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    const size = 96.0;
+    const center = Offset(size / 2, size / 2);
+
+    String emoji = '🚗';
+    final type = (vehicleType ?? 'car').toLowerCase();
+    if (type.contains('bike') || type.contains('motorcycle') || type.contains('scooter')) {
+      emoji = '🏍️';
+    } else if (type.contains('suv')) {
+      emoji = '🚙';
+    }
+
+    // Shadow
+    final shadowPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.2)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+    canvas.drawCircle(Offset(center.dx + 1.5, center.dy + 1.5), 22, shadowPaint);
+
+    // White circle
+    final bgPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, 22, bgPaint);
+
+    // Emoji
+    final tp = TextPainter(
+      text: TextSpan(text: emoji, style: const TextStyle(fontSize: 36)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size.toInt(), size.toInt());
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    return BitmapDescriptor.bytes(bytes!.buffer.asUint8List());
+  }
+  
+  double _bearing(LatLng from, LatLng to) {
+    final dLon = (to.longitude - from.longitude) * (pi / 180);
+    final y = sin(dLon) * cos(to.latitude * (pi / 180));
+    final x = cos(from.latitude * (pi / 180)) * sin(to.latitude * (pi / 180)) -
+        sin(from.latitude * (pi / 180)) * cos(to.latitude * (pi / 180)) * cos(dLon);
+    final brng = atan2(y, x) * 180 / pi;
+    return (brng + 360) % 360;
+  }
+
+  void _animateDriverMarker({
+    required String driverId,
+    required LatLng from,
+    required LatLng to,
+    required String? vehicleType,
+    required String? driverName,
+  }) async {
+    _driverAnimTimers[driverId]?.cancel();
+    const steps = 20;
+    int tick = 0;
+    const dt = Duration(milliseconds: 100);
+    final icon = await _createDriverVehicleIcon(vehicleType);
+    final rotation = _bearing(from, to);
+
+    // Add small trail polyline
+    _driverPolylines.removeWhere((p) => p.polylineId.value == 'trail_$driverId');
+    _driverPolylines.add(Polyline(
+      polylineId: PolylineId('trail_$driverId'),
+      points: [from, to],
+      color: Colors.blueAccent.withValues(alpha: 0.5),
+      width: 3,
+      geodesic: true,
+    ));
+
+    _driverAnimTimers[driverId] = Timer.periodic(dt, (t) {
+      tick++;
+      final tNorm = tick / steps;
+      final lat = from.latitude + (to.latitude - from.latitude) * tNorm;
+      final lng = from.longitude + (to.longitude - from.longitude) * tNorm;
+      final pos = LatLng(lat, lng);
+
+      _driverMarkers.removeWhere((m) => m.markerId.value == 'driver_$driverId');
+      _driverMarkers.add(Marker(
+        markerId: MarkerId('driver_$driverId'),
+        position: pos,
+        icon: icon,
+        rotation: rotation,
+        flat: true,
+        anchor: const Offset(0.5, 0.5),
+        infoWindow: InfoWindow(
+          title: driverName ?? 'Driver',
+          snippet: vehicleType ?? 'Vehicle',
+        ),
+      ));
+
+      if (mounted) setState(() {});
+
+      if (tick >= steps) {
+        t.cancel();
+        _driverPolylines.removeWhere((p) => p.polylineId.value == 'trail_$driverId');
+        if (mounted) setState(() {});
+      }
+    });
+  }
+
   void _fitMarkersInView() {
     if (_mapController == null || _pickupLocation == null || _destinationLocation == null) return;
     
@@ -611,6 +909,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await _calculateRouteData();
     }
     
+    // Save selected vehicle to provider
+    if (_selectedVehicle.isNotEmpty) {
+      ref.read(rideFlowProvider.notifier).updateFrom(
+        vehicleType: _selectedVehicle,
+      );
+    }
+    
     if (mounted) {
       Navigator.of(context).pushNamed('/confirm');
     }
@@ -680,7 +985,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ],
                 ),
                 child: IconButton(
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () {
+                    // Navigate to dashboard instead of pop to avoid crash
+                    // when coming directly from splash screen
+                    Navigator.of(context).pushReplacementNamed('/dashboard');
+                  },
                   icon: Icon(
                     Icons.arrow_back,
                     color: theme.colorScheme.onSurface,
@@ -983,13 +1292,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   color: theme.colorScheme.primary,
                 ),
                 title: Text(
-                  suggestion.description,
+                  suggestion.mainText,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                subtitle: suggestion.secondaryText.isNotEmpty
+                    ? Text(
+                        suggestion.secondaryText,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    : null,
                 onTap: () => _selectPlace(suggestion, isPickup: true),
               );
             },
@@ -1341,11 +1660,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         zoom: 14.0,
       ),
       
-      // Map markers (pickup and destination)
-      markers: _markers,
+      // Map markers (pickup, destination, and nearby drivers)
+      markers: {..._markers, ..._driverMarkers},
+      polylines: _driverPolylines,
       
       // Map interaction settings
-      myLocationEnabled: true,
+      myLocationEnabled: _locationPermissionGranted,
       myLocationButtonEnabled: false, // We'll use custom button
       zoomControlsEnabled: false, // We'll use custom zoom controls
       mapToolbarEnabled: false,
@@ -1413,13 +1733,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   color: theme.colorScheme.primary,
                 ),
                 title: Text(
-                  suggestion.description,
+                  suggestion.mainText,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                subtitle: suggestion.secondaryText.isNotEmpty
+                    ? Text(
+                        suggestion.secondaryText,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    : null,
                 onTap: () => _selectPlace(suggestion, isPickup: false),
               );
             },
@@ -1712,12 +2042,17 @@ class _VehicleOption extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        subtitle,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                      Flexible(
+                        child: Text(
+                          subtitle,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Row(
                         children: [
                           Icon(

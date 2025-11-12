@@ -5,6 +5,7 @@ import '../models/location.dart';
 import '../services/directions_service.dart';
 import '../services/fare_service.dart';
 import '../services/scheduled_rides_service.dart';
+import '../services/scheduled_ride_notifications_service.dart';
 
 // State class for schedule ride form
 class ScheduleRideState {
@@ -94,7 +95,7 @@ class ScheduleRideNotifier extends StateNotifier<ScheduleRideState> {
     if (pickup?.hasCoordinates == true && dropoff?.hasCoordinates == true) {
       try {
         final directionsService = DirectionsService('AIzaSyBRYPKaXlRhpzoAmM5-KrS2JaNDxAX_phw');
-        final fareService = FareService();
+        const fareService = FareService();
         
         final route = await directionsService.routeLatLng(
           pickup!.latitude!,
@@ -156,9 +157,8 @@ class ScheduleRideNotifier extends StateNotifier<ScheduleRideState> {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
-      // Simulate API call
-      await Future.delayed(const Duration(seconds: 2));
-
+      debugPrint('📅 Scheduling ride for ${scheduledDateTime.toString()}');
+      
       // Save scheduled ride to database/API with proper location coordinates
       final scheduledRidesService = ScheduledRidesService();
       
@@ -172,6 +172,7 @@ class ScheduleRideNotifier extends StateNotifier<ScheduleRideState> {
       );
       
       if (!success) {
+        debugPrint('❌ Schedule ride failed');
         state = state.copyWith(
           isLoading: false,
           error: 'Failed to schedule ride. Please try again.',
@@ -179,12 +180,30 @@ class ScheduleRideNotifier extends StateNotifier<ScheduleRideState> {
         return false;
       }
       
+      debugPrint('✅ Ride scheduled successfully');
+      
+      // Schedule reminder notification for passenger
+      try {
+        await ScheduledRideNotificationsService.scheduleRideReminder(
+          rideId: DateTime.now().millisecondsSinceEpoch.toString(), // Use timestamp as ID
+          scheduledTime: scheduledDateTime,
+          pickupLocation: state.pickupLocation!.displayName,
+          dropoffLocation: state.dropoffLocation!.displayName,
+          minutesBefore: 30,
+        );
+        debugPrint('⏰ Passenger reminder scheduled');
+      } catch (e) {
+        debugPrint('⚠️ Failed to schedule reminder: $e');
+      }
+      
       state = state.copyWith(isLoading: false);
+      // NOTE: scheduledRidesProvider will be refreshed from the calling code
       return true;
     } catch (e) {
+      debugPrint('❌ Error scheduling ride: $e');
       state = state.copyWith(
         isLoading: false,
-        error: 'Failed to schedule ride: $e',
+        error: 'Failed to schedule ride. Please try again.',
       );
       return false;
     }

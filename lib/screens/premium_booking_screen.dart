@@ -370,56 +370,89 @@ class PremiumBookingScreen extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Passenger Details',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 16),
-          
-          TextFormField(
-            initialValue: bookingState.passengerName,
-            decoration: InputDecoration(
-              labelText: 'Primary Passenger Name *',
-              hintText: 'Enter passenger name for booking',
-              prefixIcon: const Icon(Icons.person_outline),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+          Row(
+            children: [
+              Icon(
+                Icons.people_outline,
+                color: theme.colorScheme.primary,
+                size: 20,
               ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(
-                  color: theme.colorScheme.outline.withValues(alpha: 0.3),
+              const SizedBox(width: 8),
+              Text(
+                'Passenger Details',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(
-                  color: theme.colorScheme.primary,
-                  width: 2,
-                ),
-              ),
-            ),
-            onChanged: (value) {
-              ref.read(premiumBookingProvider.notifier).setPassengerName(value.trim());
-            },
-            validator: (value) {
-              if (value == null || value.trim().isEmpty) {
-                return 'Passenger name is required';
-              }
-              if (value.trim().length < 2) {
-                return 'Name must be at least 2 characters';
-              }
-              return null;
-            },
+            ],
           ),
-          const SizedBox(height: 12),
-          
+          const SizedBox(height: 8),
           Text(
-            'This name will appear on your boarding pass and must match your ID.',
+            'Enter details for all ${bookingState.passengers} passenger${bookingState.passengers > 1 ? 's' : ''}',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          // Generate passenger detail input boxes
+          ...List.generate(bookingState.passengers, (index) {
+            final passenger = index < bookingState.passengerDetails.length
+                ? bookingState.passengerDetails[index]
+                : null;
+            
+            return Padding(
+              padding: EdgeInsets.only(bottom: index < bookingState.passengers - 1 ? 20 : 0),
+              child: _PassengerDetailBox(
+                passengerNumber: index + 1,
+                passenger: passenger,
+                onNameChanged: (value) {
+                  ref.read(premiumBookingProvider.notifier).updatePassengerDetail(
+                    index,
+                    name: value,
+                  );
+                },
+                onEmailChanged: (value) {
+                  ref.read(premiumBookingProvider.notifier).updatePassengerDetail(
+                    index,
+                    email: value,
+                  );
+                },
+                onPhoneChanged: (value) {
+                  ref.read(premiumBookingProvider.notifier).updatePassengerDetail(
+                    index,
+                    phone: value,
+                  );
+                },
+              ),
+            );
+          }),
+          
+          const SizedBox(height: 12),
+          
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.info_outline,
+                  size: 16,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Names must match government-issued IDs for boarding',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -951,6 +984,166 @@ class _DateTimeCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _PassengerDetailBox extends StatelessWidget {
+  final int passengerNumber;
+  final dynamic passenger; // PassengerDetail or null
+  final Function(String) onNameChanged;
+  final Function(String) onEmailChanged;
+  final Function(String) onPhoneChanged;
+
+  const _PassengerDetailBox({
+    required this.passengerNumber,
+    required this.passenger,
+    required this.onNameChanged,
+    required this.onEmailChanged,
+    required this.onPhoneChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = passenger?.name ?? '';
+    final email = passenger?.email ?? '';
+    final phone = passenger?.phone ?? '';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: theme.colorScheme.outline.withValues(alpha: 0.2),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Center(
+                  child: Text(
+                    '$passengerNumber',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Passenger $passengerNumber',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          
+          // Name field
+          TextFormField(
+            initialValue: name,
+            decoration: InputDecoration(
+              labelText: 'Full Name *',
+              hintText: 'As per ID',
+              prefixIcon: const Icon(Icons.person_outline, size: 20),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: theme.colorScheme.primary,
+                  width: 1.5,
+                ),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              isDense: true,
+            ),
+            onChanged: onNameChanged,
+          ),
+          const SizedBox(height: 12),
+          
+          // Email field (optional)
+          TextFormField(
+            initialValue: email,
+            decoration: InputDecoration(
+              labelText: 'Email (Optional)',
+              hintText: 'passenger@example.com',
+              prefixIcon: const Icon(Icons.email_outlined, size: 20),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: theme.colorScheme.primary,
+                  width: 1.5,
+                ),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              isDense: true,
+            ),
+            keyboardType: TextInputType.emailAddress,
+            onChanged: onEmailChanged,
+          ),
+          const SizedBox(height: 12),
+          
+          // Phone field (optional)
+          TextFormField(
+            initialValue: phone,
+            decoration: InputDecoration(
+              labelText: 'Phone (Optional)',
+              hintText: '+254 XXX XXX XXX',
+              prefixIcon: const Icon(Icons.phone_outlined, size: 20),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: theme.colorScheme.primary,
+                  width: 1.5,
+                ),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              isDense: true,
+            ),
+            keyboardType: TextInputType.phone,
+            onChanged: onPhoneChanged,
+          ),
+        ],
       ),
     );
   }

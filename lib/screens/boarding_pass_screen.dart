@@ -2,6 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:math' as math;
+import 'dart:io';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/boarding_pass.dart';
 import '../providers/boarding_pass_providers.dart';
 
@@ -428,26 +434,8 @@ class BoardingPassScreen extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         children: [
+          // Only show cancel button for active bookings
           if (boardingPass.isActive) ...[
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton.icon(
-                onPressed: () => _checkInForBoarding(context, boardingPass, ref),
-                icon: const Icon(Icons.flight_takeoff),
-                label: const Text('Check In'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: theme.colorScheme.primary,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ),
-            
-            const SizedBox(height: 12),
-            
             SizedBox(
               width: double.infinity,
               height: 50,
@@ -464,6 +452,8 @@ class BoardingPassScreen extends ConsumerWidget {
                 ),
               ),
             ),
+            
+            const SizedBox(height: 12),
           ],
           
           const SizedBox(height: 12),
@@ -511,10 +501,16 @@ class BoardingPassScreen extends ConsumerWidget {
     switch (status) {
       case BoardingPassStatus.upcoming:
         return Colors.blue;
+      case BoardingPassStatus.confirmed:
+        return Colors.indigo;
+      case BoardingPassStatus.checkedIn:
+        return Colors.teal;
       case BoardingPassStatus.boarding:
         return Colors.orange;
       case BoardingPassStatus.departed:
-        return Colors.green;
+        return Colors.purple;
+      case BoardingPassStatus.arrived:
+        return Colors.cyan;
       case BoardingPassStatus.completed:
         return Colors.green;
       case BoardingPassStatus.cancelled:
@@ -563,37 +559,6 @@ class BoardingPassScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _checkInForBoarding(BuildContext context, BoardingPass boardingPass, WidgetRef ref) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Check In'),
-        content: const Text('Are you ready to check in for your flight?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Check In'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      await ref
-          .read(boardingPassProvider.notifier)
-          .updateBoardingPassStatus(boardingPass.id, BoardingPassStatus.boarding);
-      
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Successfully checked in!')),
-        );
-      }
-    }
-  }
 
   Future<void> _cancelBoarding(BuildContext context, BoardingPass boardingPass, WidgetRef ref) async {
     final confirmed = await showDialog<bool>(
@@ -628,15 +593,335 @@ class BoardingPassScreen extends ConsumerWidget {
     }
   }
 
-  void _downloadPass(BuildContext context, BoardingPass boardingPass) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Download feature would be implemented here')),
+  Future<void> _downloadPass(BuildContext context, BoardingPass boardingPass) async {
+    try {
+      // Generate PDF
+      final pdf = pw.Document();
+      
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          build: (context) => pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              // Header
+              pw.Container(
+                padding: const pw.EdgeInsets.all(20),
+                decoration: pw.BoxDecoration(
+                  color: PdfColors.blue,
+                  borderRadius: pw.BorderRadius.circular(10),
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text(
+                      'BOARDING PASS',
+                      style: pw.TextStyle(
+                        fontSize: 24,
+                        fontWeight: pw.FontWeight.bold,
+                        color: PdfColors.white,
+                      ),
+                    ),
+                    pw.SizedBox(height: 10),
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                      children: [
+                        pw.Text(
+                          boardingPass.origin ?? 'N/A',
+                          style: pw.TextStyle(
+                            fontSize: 32,
+                            fontWeight: pw.FontWeight.bold,
+                            color: PdfColors.white,
+                          ),
+                        ),
+                        pw.Icon(const pw.IconData(0xe530), color: PdfColors.white),
+                        pw.Text(
+                          boardingPass.destination,
+                          style: pw.TextStyle(
+                            fontSize: 32,
+                            fontWeight: pw.FontWeight.bold,
+                            color: PdfColors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              
+              pw.SizedBox(height: 30),
+              
+              // Details
+              pw.Row(
+                children: [
+                  pw.Expanded(
+                    child: _buildPdfDetailItem('PASSENGER', boardingPass.passengerName),
+                  ),
+                  pw.Expanded(
+                    child: _buildPdfDetailItem('BOOKING ID', boardingPass.bookingId),
+                  ),
+                ],
+              ),
+              
+              pw.SizedBox(height: 20),
+              
+              pw.Row(
+                children: [
+                  pw.Expanded(
+                    child: _buildPdfDetailItem('DEPARTURE', _formatDateTime(boardingPass.departureTime)),
+                  ),
+                  if (boardingPass.arrivalTime != null)
+                    pw.Expanded(
+                      child: _buildPdfDetailItem('ARRIVAL', _formatDateTime(boardingPass.arrivalTime!)),
+                    ),
+                ],
+              ),
+              
+              pw.SizedBox(height: 20),
+              
+              pw.Row(
+                children: [
+                  if (boardingPass.seatNumber != null)
+                    pw.Expanded(
+                      child: _buildPdfDetailItem('SEAT', boardingPass.seatNumber!),
+                    ),
+                  if (boardingPass.gate != null)
+                    pw.Expanded(
+                      child: _buildPdfDetailItem('GATE', boardingPass.gate!),
+                    ),
+                  pw.Expanded(
+                    child: _buildPdfDetailItem('STATUS', boardingPass.statusDisplayName),
+                  ),
+                ],
+              ),
+              
+              pw.SizedBox(height: 30),
+              
+              // QR Code
+              pw.Center(
+                child: pw.Column(
+                  children: [
+                    pw.Text(
+                      'SCAN FOR BOARDING',
+                      style: pw.TextStyle(
+                        fontSize: 14,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
+                    ),
+                    pw.SizedBox(height: 10),
+                    pw.BarcodeWidget(
+                      data: boardingPass.qrCode,
+                      barcode: pw.Barcode.qrCode(),
+                      width: 150,
+                      height: 150,
+                    ),
+                    pw.SizedBox(height: 10),
+                    pw.Text(
+                      boardingPass.qrCode,
+                      style: const pw.TextStyle(fontSize: 10),
+                    ),
+                  ],
+                ),
+              ),
+              
+              pw.Spacer(),
+              
+              // Footer
+              pw.Center(
+                child: pw.Text(
+                  'Thank you for choosing TourTaxi',
+                  style: const pw.TextStyle(
+                    fontSize: 12,
+                    color: PdfColors.grey600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      
+      // Save to device
+      final output = await getApplicationDocumentsDirectory();
+      final file = File('${output.path}/boarding_pass_${boardingPass.bookingId}.pdf');
+      await file.writeAsBytes(await pdf.save());
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Boarding pass saved to ${file.path}'),
+            action: SnackBarAction(
+              label: 'Open',
+              onPressed: () async {
+                await Printing.sharePdf(
+                  bytes: await pdf.save(),
+                  filename: 'boarding_pass_${boardingPass.bookingId}.pdf',
+                );
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to download: $e')),
+        );
+      }
+    }
+  }
+  
+  pw.Widget _buildPdfDetailItem(String label, String value) {
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text(
+          label,
+          style: pw.TextStyle(
+            fontSize: 10,
+            color: PdfColors.grey600,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          value,
+          style: pw.TextStyle(
+            fontSize: 14,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+      ],
     );
   }
 
-  void _addToWallet(BuildContext context, BoardingPass boardingPass) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Add to wallet feature would be implemented here')),
+  Future<void> _addToWallet(BuildContext context, BoardingPass boardingPass) async {
+    try {
+      // For Android: Try to use Google Wallet
+      if (Platform.isAndroid) {
+        // Create a pass data URL for Google Wallet
+        // In production, you would generate a proper JWT token from your backend
+        // and use Google Wallet API
+        
+        
+        // Try to open Google Wallet or show alternative
+        final walletUrl = Uri.parse('https://pay.google.com/gp/v/save');
+        
+        if (await canLaunchUrl(walletUrl)) {
+          // In production, this would use proper Google Wallet API
+          // For now, show instructions
+          if (context.mounted) {
+            _showWalletInstructions(context, boardingPass);
+          }
+        } else {
+          throw 'Google Wallet not available';
+        }
+      } else if (Platform.isIOS) {
+        // For iOS: Use Apple Wallet (.pkpass file)
+        if (context.mounted) {
+          _showWalletInstructions(context, boardingPass);
+        }
+      } else {
+        throw 'Wallet not supported on this platform';
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Wallet feature: $e')),
+        );
+      }
+    }
+  }
+  
+  void _showWalletInstructions(BuildContext context, BoardingPass boardingPass) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add to Wallet'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Your boarding pass can be added to your mobile wallet:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              
+              if (Platform.isAndroid) ...[
+                const Text('📱 For Google Wallet:'),
+                const SizedBox(height: 8),
+                const Text(
+                  '1. Take a screenshot of your boarding pass\n'
+                  '2. Open Google Wallet app\n'
+                  '3. Tap "Add to Wallet"\n'
+                  '4. Select "Photo" and choose the screenshot',
+                  style: TextStyle(fontSize: 13),
+                ),
+              ] else if (Platform.isIOS) ...[
+                const Text('📱 For Apple Wallet:'),
+                const SizedBox(height: 8),
+                const Text(
+                  '1. Download your boarding pass PDF\n'
+                  '2. Look for "Add to Apple Wallet" option\n'
+                  '3. Follow the prompts to add',
+                  style: TextStyle(fontSize: 13),
+                ),
+              ],
+              
+              const SizedBox(height: 16),
+              
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline, color: Colors.blue, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Keep your QR code accessible for easy boarding',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue.shade900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              
+              const SizedBox(height: 16),
+              
+              Text(
+                'Booking ID: ${boardingPass.bookingId}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _downloadPass(context, boardingPass);
+            },
+            icon: const Icon(Icons.download),
+            label: const Text('Download PDF'),
+          ),
+        ],
+      ),
     );
   }
 }

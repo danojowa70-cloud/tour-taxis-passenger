@@ -19,16 +19,21 @@ import 'screens/wallet_screen.dart';
 import 'screens/receipts_screen.dart';
 import 'screens/schedule_ride_screen.dart';
 import 'screens/boarding_pass_screen.dart';
+import 'screens/boarding_passes_screen.dart';
 import 'screens/premium_booking_screen.dart';
 import 'screens/delivery_booking_screen.dart';
 import 'screens/delivery_tracking_screen.dart';
-import 'screens/backend_test_screen.dart';
+import 'screens/scheduled_ride_details_screen.dart';
+import 'screens/scheduled_rides_history_screen.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'firebase_options.dart';
 import 'services/notification_service.dart';
 import 'services/fcm_config_service.dart';
 import 'services/error_handler_service.dart';
+import 'services/scheduled_ride_notifications_service.dart';
+import 'services/instant_ride_notifications_service.dart';
+import 'widgets/delivery_notification_listener.dart';
 
 Future<void> main() async {
   try {
@@ -61,26 +66,34 @@ Future<void> main() async {
     
     // Initialize services with error handling (only if Firebase is available)
     try {
-      // Check if Firebase is initialized before attempting to use notification services
-      bool firebaseAvailable = false;
-      try {
-        Firebase.app(); // This will throw if Firebase is not initialized
-        firebaseAvailable = true;
-      } catch (e) {
-        debugPrint('⚠️ Firebase not available, skipping Firebase-dependent services');
-      }
-      
-      if (firebaseAvailable) {
-        await NotificationService().initialize();
-        debugPrint('✅ Notification service initialized');
-        
-        await FCMConfigService().configure();
-        debugPrint('✅ FCM service configured');
-      } else {
-        debugPrint('⚠️ Skipping notification services - Firebase not available');
+      if (!kIsWeb) {
+        try {
+          await NotificationService().initialize();
+          debugPrint('✅ Notification service initialized');
+          
+          await FCMConfigService().configure();
+          debugPrint('✅ FCM service configured');
+          
+          // Initialize scheduled ride notifications
+          await ScheduledRideNotificationsService.initialize();
+          debugPrint('✅ Scheduled ride notifications initialized');
+          
+          // Initialize instant ride notifications
+          await InstantRideNotificationsService.initialize();
+          debugPrint('✅ Instant ride notifications initialized');
+          
+          // Start listening for ride updates (if user is logged in)
+          final userId = Supabase.instance.client.auth.currentUser?.id;
+          if (userId != null) {
+            ScheduledRideNotificationsService.listenForRideUpdates(userId);
+            InstantRideNotificationsService.listenForRideUpdates(userId);
+          }
+        } catch (e) {
+          debugPrint('⚠️ Service initialization failed: $e');
+        }
       }
     } catch (e) {
-      debugPrint('⚠️ Service initialization failed: $e');
+      debugPrint('⚠️ Error during service initialization: $e');
     }
     
     debugPrint('🎉 Starting app with providers...');
@@ -116,9 +129,10 @@ class MyApp extends ConsumerWidget {
         debugPrint('⚠️ Error setting up notifications: $e');
       }
       
-      debugPrint('🛤️ Building MaterialApp...');
+      debugPrint('🛌️ Building MaterialApp...');
       
-      return MaterialApp(
+      return DeliveryNotificationListener(
+        child: MaterialApp(
         title: 'TOURTAXI Passenger App',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light(),
@@ -157,13 +171,19 @@ class MyApp extends ConsumerWidget {
                 page = const DashboardScreen();
                 break;
               case '/payments':
-                page = const PaymentScreen();
+                final paymentArgs = settings.arguments as Map<String, dynamic>?;
+                page = PaymentScreen(
+                  rideId: paymentArgs?['rideId'] as String?,
+                  fare: paymentArgs?['fare'] as double?,
+                  rideType: paymentArgs?['rideType'] as String?,
+                );
                 break;
               case '/profile':
                 page = const ProfileScreen();
                 break;
               case '/payment-methods':
-                page = const PaymentMethodScreen();
+                final amount = settings.arguments as double? ?? 0.0;
+                page = PaymentMethodScreen(amount: amount);
                 break;
               case '/wallet':
                 page = const WalletScreen();
@@ -182,6 +202,9 @@ class MyApp extends ConsumerWidget {
                   page = const ErrorScreen(error: 'Boarding pass ID is required');
                 }
                 break;
+              case '/boarding-passes':
+                page = const BoardingPassesScreen();
+                break;
               case '/premium-booking':
                 page = const PremiumBookingScreen();
                 break;
@@ -191,8 +214,22 @@ class MyApp extends ConsumerWidget {
               case '/delivery-tracking':
                 page = const DeliveryTrackingScreen();
                 break;
-              case '/backend-test':
-                page = const BackendTestScreen();
+              case '/scheduled-ride-details':
+                final args = settings.arguments as Map<String, dynamic>?;
+                final rideId = args?['rideId'] as String?;
+                if (rideId != null) {
+                  page = ScheduledRideDetailsScreen(rideId: rideId);
+                } else {
+                  page = const ErrorScreen(error: 'Ride ID is required');
+                }
+                break;
+              case '/scheduled-rides-history':
+                final passengerId = settings.arguments as String?;
+                if (passengerId != null) {
+                  page = ScheduledRidesHistoryScreen(passengerId: passengerId);
+                } else {
+                  page = const ErrorScreen(error: 'Passenger ID is required');
+                }
                 break;
               default:
                 page = const SplashScreen();
@@ -213,6 +250,7 @@ class MyApp extends ConsumerWidget {
           );
         },
         initialRoute: '/',
+        ),
       );
     } catch (e, stackTrace) {
       debugPrint('💥 Error in MyApp build: $e');
@@ -234,10 +272,7 @@ Future<void> _initFcm() async {
 /// Setup navigation handling for notifications
 void _setupNotificationNavigation() {
   try {
-    // Check if Firebase is available before using notification service
-    try {
-      Firebase.app(); // This will throw if Firebase is not initialized
-      
+    if (!kIsWeb) {
       // Listen to notification stream for in-app navigation
       final notificationService = NotificationService();
       notificationService.notificationStream?.listen((notification) {
@@ -247,8 +282,6 @@ void _setupNotificationNavigation() {
           // For example: navigatorKey.currentState?.pushNamed(route);
         });
       });
-    } catch (e) {
-      debugPrint('⚠️ Firebase not available, skipping notification navigation setup');
     }
   } catch (e) {
     debugPrint('⚠️ Error setting up notification navigation: $e');

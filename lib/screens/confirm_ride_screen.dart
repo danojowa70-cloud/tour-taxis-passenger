@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../providers/ride_flow_providers.dart';
 import '../providers/realtime_providers.dart';
@@ -5,6 +6,8 @@ import '../providers/auth_providers.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../services/ride_service.dart';
 import '../services/fare_service.dart';
+import '../services/socket_service.dart';
+import '../services/instant_ride_notifications_service.dart';
 import '../models/vehicle_type.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,16 +23,31 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
   GoogleMapController? _mapController;
   String _selectedVehicle = 'car'; // Default selection
   String _selectedPayment = 'cash';
+  bool _isConfirming = false; // Prevent duplicate submissions
+
+  @override
+  void initState() {
+    super.initState();
+    // Read selected vehicle from provider after first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final vehicleType = ref.read(rideFlowProvider).vehicleType;
+      if (vehicleType != null && vehicleType.isNotEmpty) {
+        setState(() {
+          _selectedVehicle = vehicleType;
+        });
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final flow = ref.watch(rideFlowProvider);
     final theme = Theme.of(context);
     final polyPoints = flow.polyline ?? [];
-    print('🗺️ ConfirmRide: Polyline has ${polyPoints.length} points');
+    debugPrint('🗺️ ConfirmRide: Polyline has ${polyPoints.length} points');
     if (polyPoints.isNotEmpty) {
-      print('🗺️ First point: ${polyPoints.first}');
-      print('🗺️ Last point: ${polyPoints.last}');
+      debugPrint('🗺️ First point: ${polyPoints.first}');
+      debugPrint('🗺️ Last point: ${polyPoints.last}');
     }
     final polyline = polyPoints
         .map((p) => LatLng(p[0], p[1]))
@@ -347,7 +365,7 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      flow.pickup ?? 'Tour & Taxis, Brussels',
+                      flow.pickup ?? 'Pickup location',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
@@ -376,7 +394,7 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      flow.destination ?? 'Brussels Airport (BRU)',
+                      flow.destination ?? 'Destination',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
@@ -518,16 +536,16 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
         'description': 'Pay with cash'
       },
       {
-        'id': 'card',
-        'icon': Icons.credit_card,
-        'name': 'Credit Card',
-        'description': 'Visa •••• 1234'
+        'id': 'mpesa',
+        'icon': Icons.phone_android,
+        'name': 'M-Pesa',
+        'description': 'Pay via M-Pesa mobile money'
       },
       {
-        'id': 'wallet',
-        'icon': Icons.account_balance_wallet,
-        'name': 'TourTaxi Wallet',
-        'description': 'Balance: KSh 2,500'
+        'id': 'paypal',
+        'icon': Icons.payment,
+        'name': 'PayPal',
+        'description': 'Pay with PayPal account'
       },
     ];
     
@@ -737,7 +755,7 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
             Expanded(
               flex: 2,
               child: ElevatedButton(
-                onPressed: () => _confirmRide(flow),
+                onPressed: _isConfirming ? null : () => _confirmRide(flow),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: theme.colorScheme.primary,
                   foregroundColor: Colors.white,
@@ -747,13 +765,22 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
                   ),
                   elevation: 0,
                 ),
-                child: const Text(
-                  'Confirm Ride',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                child: _isConfirming
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    : const Text(
+                        'Confirm Ride',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
               ),
             ),
           ],
@@ -779,27 +806,36 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
   }
 
   Future<void> _confirmRide(flow) async {
+    // Prevent duplicate submissions
+    if (_isConfirming) return;
+    
+    setState(() => _isConfirming = true);
+    
     try {
-      final service = ref.read(rideServiceProvider);
       final f = ref.read(rideFlowProvider);
       
-      // Use default values if data is missing (for demo purposes)
-      final pickupLatLng = f.pickupLatLng ?? {'lat': 50.8503, 'lng': 4.3517}; // Brussels coordinates
-      final destinationLatLng = f.destinationLatLng ?? {'lat': 50.9014, 'lng': 4.4844}; // Brussels Airport
-      final distanceMeters = f.distanceMeters ?? 12500.0;
-      final durationSeconds = f.durationSeconds ?? 1500.0;
-      final estimatedFare = f.estimatedFare ?? 850.0;
-      
-      // Show loading state
-      if (mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => const Center(
-            child: CircularProgressIndicator(),
-          ),
-        );
+      // Validate that required data exists
+      if (f.pickupLatLng == null || f.destinationLatLng == null || 
+          f.pickup == null || f.destination == null ||
+          f.distanceMeters == null || f.durationSeconds == null ||
+          f.estimatedFare == null) {
+        if (mounted) {
+          setState(() => _isConfirming = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Missing ride information. Please select pickup and destination again.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
       }
+      
+      final pickupLatLng = f.pickupLatLng!;
+      final destinationLatLng = f.destinationLatLng!;
+      final distanceMeters = f.distanceMeters!;
+      final durationSeconds = f.durationSeconds!;
+      final estimatedFare = f.estimatedFare!;
       
       // Get user profile data
       final userProfile = ref.read(userProfileProvider);
@@ -807,41 +843,176 @@ class _ConfirmRideScreenState extends ConsumerState<ConfirmRideScreen> {
                       Supabase.instance.client.auth.currentUser?.userMetadata?['full_name'] ?? 
                       Supabase.instance.client.auth.currentUser?.email?.split('@')[0] ?? 
                       'Passenger';
-      final userPhone = userProfile.value?['phone'] ?? 
-                       Supabase.instance.client.auth.currentUser?.phone ?? 
-                       '+1234567890';
       
-      final rideId = await service.createRide(
+      // Get user phone number - MUST be present for ride request
+      String? userPhone = userProfile.value?['phone'];
+      if (userPhone == null || userPhone.isEmpty) {
+        userPhone = Supabase.instance.client.auth.currentUser?.phone;
+      }
+      
+      // If no phone number is available, show error and prompt user to add it
+      if (userPhone == null || userPhone.isEmpty) {
+        if (mounted) {
+          setState(() => _isConfirming = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Please add your phone number in the profile settings'),
+              backgroundColor: Colors.orange,
+              action: SnackBarAction(
+                label: 'Add Now',
+                textColor: Colors.white,
+                onPressed: () {
+                  Navigator.of(context).pushNamed('/profile');
+                },
+              ),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+        return;
+      }
+      
+      // Get user email - should be present from auth
+      String? userEmail = Supabase.instance.client.auth.currentUser?.email;
+      if (userEmail == null || userEmail.isEmpty) {
+        userEmail = userProfile.value?['email'] as String?;
+      }
+      
+      debugPrint('📡 Sending ride request via Socket.IO (backend will create ride in database)...');
+      debugPrint('👤 Passenger info: name=$userName, phone=$userPhone, email=$userEmail');
+      
+      // Ensure socket is connected before sending ride request
+      if (!SocketService.instance.isConnected) {
+        debugPrint('⚠️ Socket not connected, initializing...');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Connecting to server...'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        
+        await SocketService.instance.initialize();
+        
+        // Wait up to 15 seconds for connection (to handle Render cold starts)
+        int attempts = 0;
+        while (!SocketService.instance.isConnected && attempts < 30) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          attempts++;
+          debugPrint('🔄 Waiting for socket connection... (attempt $attempts/30)');
+          
+          // Show wakeup message after 5 seconds
+          if (attempts == 10 && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Server is waking up, please wait...'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        }
+        
+        if (!SocketService.instance.isConnected) {
+          throw Exception('Failed to connect to server. The server might be down or your internet connection might be unstable.');
+        }
+        
+        debugPrint('✅ Socket connected successfully after $attempts attempts');
+      }
+      
+      // CRITICAL: Send ride request via Socket.IO - backend will create ride and passenger
+      final passengerId = Supabase.instance.client.auth.currentUser?.id ?? 'unknown';
+      await SocketService.instance.requestRide(
+        passengerId: passengerId,
         passengerName: userName,
         passengerPhone: userPhone,
-        pickupLat: pickupLatLng['lat']!,
-        pickupLng: pickupLatLng['lng']!,
-        pickupAddress: f.pickup ?? 'Tour & Taxis, Brussels',
-        destLat: destinationLatLng['lat']!,
-        destLng: destinationLatLng['lng']!,
-        destAddress: f.destination ?? 'Brussels Airport (BRU)',
-        distanceMeters: distanceMeters,
-        durationSeconds: durationSeconds,
+        passengerEmail: userEmail, // Pass real email to backend
+        pickupLatitude: pickupLatLng['lat']!,
+        pickupLongitude: pickupLatLng['lng']!,
+        pickupAddress: f.pickup!,
+        destinationLatitude: destinationLatLng['lat']!,
+        destinationLongitude: destinationLatLng['lng']!,
+        destinationAddress: f.destination!,
+        distance: distanceMeters / 1000, // Convert to km
+        duration: (durationSeconds / 60).round(), // Convert to minutes
         fare: estimatedFare,
+        vehicleType: _selectedVehicle, // Pass selected vehicle type for driver matching
       );
       
-      // Set the ride ID in both providers
-      ref.read(rideFlowProvider.notifier).setRideId(rideId);
-      ref.read(rideRealtimeProvider.notifier).setRideId(rideId);
+      debugPrint('✅ Socket ride request sent! Waiting for ride_id from backend...');
       
-      // Close loading dialog
-      if (mounted) {
-        Navigator.of(context).pop(); // Close loading dialog
-        Navigator.of(context).pushNamed('/searching');
+      // Listen for ride_request_submitted to get the ride_id from backend
+      StreamSubscription? rideSubmittedSub;
+      StreamSubscription? rideFailedSub;
+      final completer = Completer<String>();
+      
+      rideSubmittedSub = SocketService.instance.rideRequestSubmittedStream.listen((data) {
+        final rideId = data['ride_id'] as String?;
+        if (rideId != null && !completer.isCompleted) {
+          debugPrint('✅ Received ride_id from backend: $rideId');
+          completer.complete(rideId);
+          rideSubmittedSub?.cancel();
+          rideFailedSub?.cancel();
+        }
+      });
+      
+      // Listen for ride_request_failed event
+      rideFailedSub = SocketService.instance.errorStream.listen((data) {
+        if (!completer.isCompleted && data['error'] == 'DATABASE_ERROR') {
+          debugPrint('❌ Ride request failed: ${data['message']}');
+          completer.completeError(Exception(data['message'] ?? 'Failed to create ride'));
+          rideSubmittedSub?.cancel();
+          rideFailedSub?.cancel();
+        }
+      });
+      
+      // Wait for ride_id with timeout (increased to 30 seconds for Render cold starts)
+      try {
+        final rideId = await completer.future.timeout(
+          const Duration(seconds: 30),
+          onTimeout: () {
+            debugPrint('⚠️ Timeout waiting for ride_id from backend after 30 seconds');
+            throw Exception('Server is taking too long to respond. Please try again.');
+          },
+        );
+        
+        // Set the ride ID in both providers
+        ref.read(rideFlowProvider.notifier).setRideId(rideId);
+        ref.read(rideRealtimeProvider.notifier).setRideId(rideId);
+        
+        // Ensure notification listener is active for this user
+        final userId = Supabase.instance.client.auth.currentUser?.id;
+        if (userId != null) {
+          InstantRideNotificationsService.listenForRideUpdates(userId);
+          debugPrint('✅ Ensured notification listener is active for ride: $rideId');
+        }
+        
+        // Navigate to searching screen
+        if (mounted) {
+          Navigator.of(context).pushNamed('/searching');
+        }
+      } catch (e) {
+        rideSubmittedSub.cancel();
+rideFailedSub.cancel();
+        throw Exception('Failed to get ride confirmation: ${e.toString()}');
       }
     } catch (e) {
-      // Close loading dialog if it's open
+      // Reset confirming state and show error
       if (mounted) {
-        Navigator.of(context).pop();
+        setState(() => _isConfirming = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to create ride: ${e.toString()}'),
             backgroundColor: Colors.red,
+            duration: const Duration(seconds: 6),
+            action: SnackBarAction(
+              label: 'Retry',
+              textColor: Colors.white,
+              onPressed: () {
+                _confirmRide(flow);
+              },
+            ),
           ),
         );
       }
@@ -950,18 +1121,23 @@ class _VehicleSelectionTile extends StatelessWidget {
                     style: theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                   Text(
                     vehicle['description'] as String,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                     ),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
                   ),
                 ],
               ),
             ),
+            const SizedBox(width: 12),
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   'KSh ${vehicle['price']}',
@@ -1033,12 +1209,15 @@ class _PaymentMethodTile extends StatelessWidget {
                     style: theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                   Text(
                     method['description'] as String,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                     ),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
                   ),
                 ],
               ),

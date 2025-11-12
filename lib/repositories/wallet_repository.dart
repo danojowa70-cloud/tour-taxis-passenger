@@ -4,11 +4,11 @@ class WalletRepository {
   final WalletService service;
   WalletRepository(this.service);
 
-  double get balance => service.balance;
-  List<Map<String, dynamic>> get ledger => service.ledger;
-  void topUp(double amount) => service.topUp(amount);
-  bool charge(double amount) => service.charge(amount);
-  void refund(double amount) => service.refund(amount);
+  Future<double> getBalance() => service.getBalance();
+  Future<List<Map<String, dynamic>>> getLedger() => service.getLedger();
+  Future<void> topUp(double amount) => service.topUp(amount);
+  Future<bool> charge(double amount) => service.charge(amount);
+  Future<void> refund(double amount) => service.refund(amount);
 }
 
 

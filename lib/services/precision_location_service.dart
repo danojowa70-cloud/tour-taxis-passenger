@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -23,7 +22,6 @@ class PrecisionLocationService {
   // Accuracy settings
   static const double _accuracyThreshold = 10.0; // meters
   static const int _maxLocationAge = 30000; // 30 seconds in milliseconds
-  static const Duration _locationUpdateInterval = Duration(seconds: 2);
   static const Duration _timeoutDuration = Duration(seconds: 10);
   
   // Getters

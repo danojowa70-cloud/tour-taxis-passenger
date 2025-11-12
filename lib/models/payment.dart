@@ -1,6 +1,6 @@
 class PaymentRecord {
   final String id;
-  final String method; // Cash, Card, Wallet
+  final String method; // Cash, M-Pesa, PayPal
   final double amount;
   final String status; // Paid, Pending, Failed
   final DateTime dateTime;

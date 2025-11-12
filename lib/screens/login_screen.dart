@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../widgets/inputs.dart';
 import '../services/error_handler_service.dart';
+import '../services/instant_ride_notifications_service.dart';
+import '../services/scheduled_ride_notifications_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -38,7 +40,49 @@ class _LoginScreenState extends State<LoginScreen> {
     );
     
     if (result != null && mounted) {
+      final user = result.user;
+      
+      // Check if passenger record exists, if not create one with basic info
+      if (user != null) {
+        try {
+          final existingPassenger = await Supabase.instance.client
+              .from('passengers')
+              .select()
+              .eq('auth_user_id', user.id)
+              .maybeSingle();
+          
+          if (existingPassenger == null) {
+            // Create passenger record with available information
+            final name = user.userMetadata?['full_name'] ?? user.email?.split('@')[0] ?? 'User';
+            final phone = user.phone ?? user.userMetadata?['phone'];
+            
+            await Supabase.instance.client.from('passengers').insert({
+              'auth_user_id': user.id,
+              'name': name,
+              'email': user.email,
+              if (phone != null) 'phone': phone,
+              'created_at': DateTime.now().toIso8601String(),
+            });
+            
+            debugPrint('✅ Created passenger record for existing user');
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error checking/creating passenger record: $e');
+          // Continue with login even if this fails
+        }
+      }
+      
+      // Start listening for ride notifications after successful login
+      final userId = user?.id;
+      if (userId != null) {
+        InstantRideNotificationsService.listenForRideUpdates(userId);
+        ScheduledRideNotificationsService.listenForRideUpdates(userId);
+        debugPrint('✅ Started listening for ride notifications for user: $userId');
+      }
+      
+      if (!mounted) return;
       ErrorHandlerService.showSuccess(context, 'Welcome back!');
+      if (!mounted) return;
       Navigator.of(context).pushNamedAndRemoveUntil('/dashboard', (route) => false);
     }
     

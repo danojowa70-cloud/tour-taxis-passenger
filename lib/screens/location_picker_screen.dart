@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import '../models/location.dart';
-import '../services/places_service.dart';
-import '../services/precision_location_service.dart';
-import '../providers/home_providers.dart';
 
 class LocationPickerScreen extends ConsumerStatefulWidget {
   final String title;
@@ -23,6 +22,8 @@ class LocationPickerScreen extends ConsumerStatefulWidget {
 }
 
 class _LocationPickerScreenState extends ConsumerState<LocationPickerScreen> {
+  static const String _googleApiKey = "AIzaSyBRYPKaXlRhpzoAmM5-KrS2JaNDxAX_phw";
+  
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
   List<Map<String, String>> _searchResults = [];
@@ -87,14 +88,14 @@ class _LocationPickerScreenState extends ConsumerState<LocationPickerScreen> {
       ];
       
       _recentPlaces = [
-        Location(
+        const Location(
           name: 'JKIA Terminal 1A',
           formattedAddress: 'Jomo Kenyatta International Airport, Nairobi',
           latitude: -1.3192,
           longitude: 36.9278,
           type: LocationType.recentPlace,
         ),
-        Location(
+        const Location(
           name: 'Sarit Centre',
           formattedAddress: 'Westlands, Nairobi',
           latitude: -1.2630,
@@ -119,50 +120,129 @@ class _LocationPickerScreenState extends ConsumerState<LocationPickerScreen> {
     });
 
     try {
-      final placesService = ref.read(placesServiceProvider);
-      final results = await placesService.autocompleteWithIds(query);
+      // Get current location for bias if available
+      String location = '';
+      if (_currentLocation != null) {
+        location = '${_currentLocation!.latitude},${_currentLocation!.longitude}';
+      }
       
-      setState(() {
-        _searchResults = results;
-        _isSearching = false;
-      });
+      // Build Google Places Autocomplete API URL
+      final url = 'https://maps.googleapis.com/maps/api/place/autocomplete/json'
+          '?input=${Uri.encodeComponent(query)}'
+          '${location.isNotEmpty ? '&location=$location&radius=50000' : ''}'
+          '&language=en'
+          '&components=country:in'
+          '&key=$_googleApiKey';
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        
+        if (data['status'] == 'OK' && data['predictions'] != null) {
+          final predictions = (data['predictions'] as List)
+              .map((p) => {
+                    'place_id': p['place_id']?.toString() ?? '',
+                    'description': p['description']?.toString() ?? '',
+                  })
+              .toList();
+          
+          if (mounted) {
+            setState(() {
+              _searchResults = predictions;
+              _isSearching = false;
+            });
+          }
+        } else {
+          debugPrint('Google Places API error: ${data['status']}');
+          if (mounted) {
+            setState(() {
+              _searchResults = [];
+              _isSearching = false;
+            });
+          }
+        }
+      } else {
+        throw Exception('HTTP ${response.statusCode}');
+      }
     } catch (e) {
-      setState(() {
-        _searchResults = [];
-        _isSearching = false;
-      });
+      debugPrint('Error searching places: $e');
+      if (mounted) {
+        setState(() {
+          _searchResults = [];
+          _isSearching = false;
+        });
+      }
     }
   }
 
   Future<void> _selectPlace(Map<String, String> placeData) async {
+    if (!mounted) return;
+    
     try {
-      final placesService = ref.read(placesServiceProvider);
       final placeId = placeData['place_id'] ?? '';
       final description = placeData['description'] ?? '';
       
-      if (placeId.isNotEmpty) {
-        final coordinates = await placesService.placeDetailsLatLng(placeId);
-        if (coordinates != null && context.mounted) {
-          final location = Location.fromPlaceDetails(
-            placeId: placeId,
-            name: description,
-            formattedAddress: description,
-            latitude: coordinates['lat']!,
-            longitude: coordinates['lng']!,
-          );
-          
-          Navigator.of(context).pop(location);
-        }
-      }
-    } catch (e) {
-      if (context.mounted) {
+      if (placeId.isEmpty) return;
+      
+      // Show loading indicator
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error selecting location: $e'),
-            backgroundColor: Colors.red,
+          const SnackBar(
+            content: Text('Loading location details...'),
+            duration: Duration(seconds: 1),
           ),
         );
       }
+      
+      // Get place details from Google Places API
+      final url = 'https://maps.googleapis.com/maps/api/place/details/json'
+          '?place_id=$placeId'
+          '&fields=geometry,formatted_address,name'
+          '&key=$_googleApiKey';
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        
+        if (data['status'] == 'OK' && data['result'] != null) {
+          final result = data['result'];
+          final geometry = result['geometry'];
+          final locationData = geometry['location'];
+          
+          final lat = locationData['lat'] as double;
+          final lng = locationData['lng'] as double;
+          final formattedAddress = result['formatted_address'] as String?;
+          final name = result['name'] as String?;
+          
+          if (mounted) {
+            final location = Location.fromPlaceDetails(
+              placeId: placeId,
+              name: name ?? description,
+              formattedAddress: formattedAddress ?? description,
+              latitude: lat,
+              longitude: lng,
+            );
+            
+            Navigator.of(context).pop(location);
+          }
+        } else {
+          throw Exception('Place details not found');
+        }
+      } else {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error selecting location: $e');
+      if (!mounted) return;
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error selecting location: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 

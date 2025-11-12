@@ -83,6 +83,84 @@ export const RidesService = {
     if (error) throw error;
     return data || [];
   },
-};
 
+  async acceptRide(rideId: string, driverId: string): Promise<{ success: boolean; message?: string; ride?: any; driver?: any }> {
+    try {
+      // Get driver details first
+      const { data: driverData, error: driverError } = await supabase
+        .from('drivers')
+        .select('*')
+        .eq('id', driverId)
+        .single();
+
+      if (driverError || !driverData) {
+        return { success: false, message: 'Driver not found' };
+      }
+
+      // Check if driver is available
+      if (!driverData.is_online || !driverData.is_available) {
+        return { success: false, message: 'Driver is not available' };
+      }
+
+      // Update ride status and assign driver
+      const { data: rideData, error: rideError } = await supabase
+        .from('rides')
+        .update({
+          driver_id: driverId,
+          status: 'accepted' as RideStatus,
+          accepted_at: new Date().toISOString(),
+        })
+        .eq('id', rideId)
+        .eq('status', 'requested') // Only accept if still in requested state
+        .select()
+        .single();
+
+      if (rideError || !rideData) {
+        return { success: false, message: 'Failed to update ride or ride already accepted' };
+      }
+
+      // Create ride event for real-time updates to passenger app
+      await supabase.from('ride_events').insert({
+        ride_id: rideId,
+        actor: 'driver',
+        event_type: 'ride:accepted',
+        payload: {
+          driver_id: driverId,
+          driver_name: driverData.name || 'Driver',
+          driver_phone: driverData.phone || '',
+          driver_car: `${driverData.vehicle_make || ''} ${driverData.vehicle_model || ''}`.trim(),
+          vehicle_type: driverData.vehicle_type || '',
+          vehicle_number: driverData.vehicle_number || '',
+          vehicle_plate: driverData.vehicle_plate || '',
+          driver_rating: driverData.rating || 4.5,
+          driver_data: {
+            id: driverId,
+            name: driverData.name || 'Driver',
+            phone: driverData.phone || '',
+            vehicle_make: driverData.vehicle_make || '',
+            vehicle_model: driverData.vehicle_model || '',
+            vehicle_type: driverData.vehicle_type || '',
+            vehicle_number: driverData.vehicle_number || '',
+            vehicle_plate: driverData.vehicle_plate || '',
+            rating: driverData.rating || 4.5,
+          },
+        },
+      });
+
+      // Update driver availability
+      await supabase.from('drivers').update({
+        is_available: false,
+      }).eq('id', driverId);
+
+      return {
+        success: true,
+        ride: rideData,
+        driver: driverData,
+      };
+    } catch (error: any) {
+      console.error('Error accepting ride:', error);
+      return { success: false, message: error.message || 'Internal server error' };
+    }
+  },
+};
 

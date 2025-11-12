@@ -12,7 +12,7 @@ class ProfileScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final rides = ref.watch(ridesProvider);
+    final ridesAsync = ref.watch(ridesProvider);
     final isDark = ref.watch(themeDarkProvider);
     final user = Supabase.instance.client.auth.currentUser;
     final subtle = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
@@ -121,13 +121,41 @@ class ProfileScreen extends ConsumerWidget {
                             );
                           },
                         ),
-                        Text('Rides taken: ${rides.length}', style: TextStyle(color: subtle)),
+                        ridesAsync.when(
+                          data: (rides) => Text('Rides taken: ${rides.length}', style: TextStyle(color: subtle)),
+                          loading: () => Text('Rides taken: ...', style: TextStyle(color: subtle)),
+                          error: (_, __) => Text('Rides taken: 0', style: TextStyle(color: subtle)),
+                        ),
                       ],
                     ),
                   )
                 ],
               ),
               const SizedBox(height: 16),
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  children: [
+                    ListTile(
+                      onTap: () => _showEditNameDialog(context, ref),
+                      leading: const Icon(Icons.person_outline),
+                      title: const Text('Edit Name'),
+                      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    ),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.1)),
+                    ListTile(
+                      onTap: () => _showEditPhoneDialog(context, ref),
+                      leading: const Icon(Icons.phone_outlined),
+                      title: const Text('Edit Phone'),
+                      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
               Container(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surface,
@@ -337,6 +365,117 @@ class ProfileScreen extends ConsumerWidget {
       }
     }
   }
+  
+  void _showEditNameDialog(BuildContext context, WidgetRef ref) {
+    final userProfile = ref.read(userProfileProvider);
+    final currentName = userProfile.value?['name'] ?? '';
+    final nameController = TextEditingController(text: currentName);
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Name'),
+        content: TextField(
+          controller: nameController,
+          decoration: const InputDecoration(
+            labelText: 'Full Name',
+            hintText: 'Enter your full name',
+          ),
+          textCapitalization: TextCapitalization.words,
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final newName = nameController.text.trim();
+              if (newName.isEmpty) {
+                ErrorHandlerService.showInfo(context, 'Name cannot be empty');
+                return;
+              }
+              
+              Navigator.of(context).pop();
+              
+              await ErrorHandlerService.handleAsync<void>(
+                () async {
+                  final authService = ref.read(authServiceProvider);
+                  await authService.updateProfile(name: newName);
+                },
+                context: context,
+                errorMessage: 'Failed to update name',
+              );
+              
+              // Refresh profile
+              ref.invalidate(userProfileProvider);
+              
+              if (context.mounted) {
+                ErrorHandlerService.showSuccess(context, 'Name updated successfully');
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _showEditPhoneDialog(BuildContext context, WidgetRef ref) {
+    final userProfile = ref.read(userProfileProvider);
+    final currentPhone = userProfile.value?['phone'] ?? '';
+    final phoneController = TextEditingController(text: currentPhone);
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Phone'),
+        content: TextField(
+          controller: phoneController,
+          decoration: const InputDecoration(
+            labelText: 'Phone Number',
+            hintText: 'Enter your phone number',
+          ),
+          keyboardType: TextInputType.phone,
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final newPhone = phoneController.text.trim();
+              if (newPhone.isEmpty) {
+                ErrorHandlerService.showInfo(context, 'Phone number cannot be empty');
+                return;
+              }
+              
+              Navigator.of(context).pop();
+              
+              await ErrorHandlerService.handleAsync<void>(
+                () async {
+                  final authService = ref.read(authServiceProvider);
+                  await authService.updateProfile(phone: newPhone);
+                },
+                context: context,
+                errorMessage: 'Failed to update phone',
+              );
+              
+              // Refresh profile
+              ref.invalidate(userProfileProvider);
+              
+              if (context.mounted) {
+                ErrorHandlerService.showSuccess(context, 'Phone updated successfully');
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
 }
-
 

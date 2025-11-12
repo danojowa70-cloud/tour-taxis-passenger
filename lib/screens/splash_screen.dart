@@ -64,8 +64,8 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     final user = Supabase.instance.client.auth.currentUser;
     
     if (user != null) {
-      // User is logged in, go directly to home screen
-      Navigator.of(context).pushReplacementNamed('/home');
+      // User is logged in, go to dashboard screen
+      Navigator.of(context).pushReplacementNamed('/dashboard');
     } else {
       // User not logged in, go to login screen
       Navigator.of(context).pushReplacementNamed('/auth');

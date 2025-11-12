@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/realtime_providers.dart';
+import '../providers/socket_ride_providers.dart';
+import '../providers/ride_flow_providers.dart';
 
 class RideSearchingScreen extends ConsumerStatefulWidget {
   const RideSearchingScreen({super.key});
@@ -14,6 +17,8 @@ class _RideSearchingScreenState extends ConsumerState<RideSearchingScreen> with 
   late final AnimationController _rotationController;
   late final Animation<double> _pulseAnimation;
   late final Animation<double> _rotationAnimation;
+  bool _hasNavigated = false; // Prevent multiple navigation
+  StreamSubscription? _rideAcceptedSubscription;
 
   @override
   void initState() {
@@ -22,10 +27,40 @@ class _RideSearchingScreenState extends ConsumerState<RideSearchingScreen> with 
     _rotationController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
     _pulseAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut));
     _rotationAnimation = Tween<double>(begin: 0, end: 1).animate(CurvedAnimation(parent: _rotationController, curve: Curves.linear));
+    
+    // Reset navigation flag for new search session
+    _hasNavigated = false;
+    
+    // Clear any previous error states
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        debugPrint('🔄 Clearing previous socket errors for new ride search');
+        ref.read(socketRideProvider.notifier).clearError();
+        
+        // Set up direct socket listener for ride acceptance
+        _setupRideAcceptedListener();
+      }
+    });
+  }
+  
+  void _setupRideAcceptedListener() {
+    final socketService = ref.read(socketServiceProvider);
+    _rideAcceptedSubscription = socketService.rideAcceptedStream.listen((data) {
+      debugPrint('🎉 DIRECT LISTENER: Ride accepted event in searching screen!');
+      debugPrint('📝 Event data: $data');
+      
+      // Force state refresh to trigger navigation
+      if (mounted) {
+        setState(() {
+          // This will trigger the build method and postFrameCallback
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _rideAcceptedSubscription?.cancel();
     _pulseController.dispose();
     _rotationController.dispose();
     super.dispose();
@@ -34,29 +69,116 @@ class _RideSearchingScreenState extends ConsumerState<RideSearchingScreen> with 
   @override
   Widget build(BuildContext context) {
     final rideState = ref.watch(rideRealtimeProvider);
+    final socketState = ref.watch(socketRideProvider);
     final theme = Theme.of(context);
 
-    // Handle navigation based on ride state
+    // Handle navigation based on either Supabase or Socket state
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       
-      switch (rideState.status) {
+      final supaStatus = rideState.status;
+      final socketStatus = socketState.status;
+      
+      // Prioritize socket status for real-time events
+      final status = socketStatus != 'idle' && socketStatus != 'requesting' ? socketStatus : supaStatus;
+      
+      debugPrint('🔍 RideSearchingScreen - Supabase status: $supaStatus, Socket status: $socketStatus, Final status: $status');
+      debugPrint('🔍 Navigation lock: $_hasNavigated');
+      
+      if (socketState.currentRide != null) {
+        debugPrint('🚗 Current ride in socket state: ${socketState.currentRide!.id}, status: ${socketState.currentRide!.status}');
+      }
+      
+      // Check ride object status as well
+      final rideObjectStatus = socketState.currentRide?.status;
+      if (rideObjectStatus != null) {
+        debugPrint('🚗 Ride object status: $rideObjectStatus');
+      }
+      
+      // Use ride object status if socket state status doesn't match
+      final effectiveStatus = (rideObjectStatus == 'accepted' || rideObjectStatus == 'started') 
+          ? rideObjectStatus 
+          : status;
+      
+      debugPrint('🎯 Effective status for navigation: $effectiveStatus');
+      
+      // Priority statuses that override the navigation lock
+      final isPriorityStatus = effectiveStatus == 'accepted' || effectiveStatus == 'started' || effectiveStatus == 'completed';
+      
+      // Skip if already navigated and this is not a priority status
+      if (_hasNavigated && !isPriorityStatus) {
+        debugPrint('⚠️ Already navigated and not a priority status, skipping');
+        return;
+      }
+      
+      switch (effectiveStatus) {
         case 'accepted':
+        case 'started': // Also handle ride_started event
+          // Reset navigation flag and close any dialogs if showing no_drivers/timeout
+          if (_hasNavigated) {
+            debugPrint('🔄 Resetting navigation flag - ride was accepted after timeout/no_drivers');
+            Navigator.of(context, rootNavigator: true).popUntil((route) => route.settings.name == '/searching' || route.isFirst);
+          }
+          _hasNavigated = true; // Mark as navigated to prevent multiple calls
+          debugPrint('✅ Ride accepted/started! Navigating to ride details...');
+          // Bridge data from socket to ride flow for details screen
+          final r = socketState.currentRide;
+          if (r != null) {
+            debugPrint('📦 Updating ride flow provider with ride data: ${r.id}');
+            ref.read(rideFlowProvider.notifier).setRideId(r.id);
+            ref.read(rideFlowProvider.notifier).updateFrom(
+              pickup: r.pickupAddress,
+              destination: r.destinationAddress,
+              pickupLatLng: {'lat': r.pickupLatitude, 'lng': r.pickupLongitude},
+              destinationLatLng: {'lat': r.destinationLatitude, 'lng': r.destinationLongitude},
+            );
+            debugPrint('✅ Ride flow provider updated');
+          } else {
+            debugPrint('⚠️ No current ride data available in socket state!');
+          }
+          debugPrint('📍 Navigating to /ride-details');
           Navigator.of(context).pushReplacementNamed('/ride-details');
           break;
         case 'completed':
-          Navigator.of(context).pushReplacementNamed('/payments');
+          if (!_hasNavigated) {
+            _hasNavigated = true;
+            Navigator.of(context).pushReplacementNamed('/payments');
+          }
           break;
         case 'cancelled':
-          Navigator.of(context).pop();
+          if (!_hasNavigated) {
+            _hasNavigated = true;
+            debugPrint('❌ Ride was cancelled, clearing state and going back');
+            // Clear ride state before going back
+            ref.read(rideFlowProvider.notifier).clearAll();
+            Navigator.of(context).pop();
+          }
           break;
+        case 'timeout':
         case 'no_drivers':
-          _showNoDriversDialog();
+          if (!_hasNavigated) {
+            _hasNavigated = true;
+            _showNoDriversDialog();
+          }
           break;
       }
     });
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        debugPrint('⚠️ User pressed back button - cancelling ride request');
+        await ref.read(rideRealtimeProvider.notifier).cancelRide(
+          reason: 'Passenger pressed back button',
+        );
+        // Clear ride state
+        ref.read(rideFlowProvider.notifier).clearAll();
+        if (context.mounted) {
+          Navigator.of(context).pop();
+        }
+      },
+      child: Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
       body: SafeArea(
         child: Padding(
@@ -79,10 +201,13 @@ class _RideSearchingScreenState extends ConsumerState<RideSearchingScreen> with 
                       ],
                     ),
                     child: IconButton(
-                      onPressed: () async {
+                  onPressed: () async {
+                        debugPrint('🚫 Cancelling ride request from search screen');
                         await ref.read(rideRealtimeProvider.notifier).cancelRide(
                           reason: 'Passenger cancelled during search',
                         );
+                        // Clear ride state
+                        ref.read(rideFlowProvider.notifier).clearAll();
                         if (context.mounted) {
                           Navigator.of(context).pop();
                         }
@@ -196,9 +321,12 @@ class _RideSearchingScreenState extends ConsumerState<RideSearchingScreen> with 
                 height: 56,
                 child: OutlinedButton(
                   onPressed: () async {
+                    debugPrint('🚫 Cancelling ride request from cancel button');
                     await ref.read(rideRealtimeProvider.notifier).cancelRide(
                       reason: 'Passenger cancelled',
                     );
+                    // Clear ride state
+                    ref.read(rideFlowProvider.notifier).clearAll();
                     if (context.mounted) {
                       Navigator.of(context).pop();
                     }
@@ -224,6 +352,7 @@ class _RideSearchingScreenState extends ConsumerState<RideSearchingScreen> with 
             ],
           ),
         ),
+      ),
       ),
     );
   }

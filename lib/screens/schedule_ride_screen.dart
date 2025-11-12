@@ -1,16 +1,40 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/schedule_providers.dart';
+import '../providers/auth_providers.dart';
 import '../models/location.dart';
 import '../screens/location_picker_screen.dart';
+import '../screens/scheduled_rides_history_screen.dart';
 
-class ScheduleRideScreen extends ConsumerWidget {
+class ScheduleRideScreen extends ConsumerStatefulWidget {
   const ScheduleRideScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ScheduleRideScreen> createState() => _ScheduleRideScreenState();
+}
+
+class _ScheduleRideScreenState extends ConsumerState<ScheduleRideScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final scheduleState = ref.watch(scheduleRideProvider);
     final theme = Theme.of(context);
+    final userProfile = ref.watch(userProfileProvider);
+    final userId = userProfile.whenData((profile) => profile?['id'] as String?).value;
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
@@ -23,54 +47,78 @@ class ScheduleRideScreen extends ConsumerWidget {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(),
         ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(60),
+          child: Column(
+            children: [
+              TabBar(
+                controller: _tabController,
+                tabs: const [
+                  Tab(text: 'Active'),
+                  Tab(text: 'History'),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: SingleChildScrollView(
-                physics: const BouncingScrollPhysics(),
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Header section
-                      _buildHeader(context, theme),
-                      
-                      const SizedBox(height: 32),
-                      
-                      // Location inputs
-                      _buildLocationSection(context, ref, theme),
-                      
-                      const SizedBox(height: 24),
-                      
-                      // Date and Time section
-                      _buildDateTimeSection(context, ref, theme),
-                      
-                      const SizedBox(height: 24),
-                      
-                      // Fare estimation
-                      if (scheduleState.canSchedule)
-                        _buildFareEstimation(context, theme, scheduleState),
-                      
-                      const SizedBox(height: 24),
-                      
-                      // Error message
-                      if (scheduleState.error != null)
-                        _buildErrorMessage(context, theme, scheduleState.error!),
-                      
-                      const SizedBox(height: 100), // Space for button
-                    ],
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          // Active tab - Schedule new ride
+          SafeArea(
+            child: Column(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    physics: const BouncingScrollPhysics(),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Header section
+                          _buildHeader(context, theme),
+                          
+                          const SizedBox(height: 32),
+                          
+                          // Location inputs
+                          _buildLocationSection(context, ref, theme),
+                          
+                          const SizedBox(height: 24),
+                          
+                          // Date and Time section
+                          _buildDateTimeSection(context, ref, theme),
+                          
+                          const SizedBox(height: 24),
+                          
+                          // Fare estimation
+                          if (scheduleState.canSchedule)
+                            _buildFareEstimation(context, theme, scheduleState),
+                          
+                          const SizedBox(height: 24),
+                          
+                          // Error message
+                          if (scheduleState.error != null)
+                            _buildErrorMessage(context, theme, scheduleState.error!),
+                          
+                          const SizedBox(height: 100), // Space for button
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                
+                // Schedule button
+                _buildScheduleButton(context, ref, theme, scheduleState),
+              ],
             ),
-            
-            // Schedule button
-            _buildScheduleButton(context, ref, theme, scheduleState),
-          ],
-        ),
+          ),
+          // History tab
+          userId != null 
+              ? ScheduledRidesHistoryScreen(passengerId: userId)
+              : const Center(child: CircularProgressIndicator()),
+        ],
       ),
     );
   }
@@ -385,21 +433,40 @@ class ScheduleRideScreen extends ConsumerWidget {
   }
 
   Future<void> _handleScheduleRide(BuildContext context, WidgetRef ref) async {
+    debugPrint('🚀 === STARTING SCHEDULE RIDE ===');
     final success = await ref.read(scheduleRideProvider.notifier).scheduleRide();
+    debugPrint('🚀 Schedule ride result: $success');
     
     if (success && context.mounted) {
       // Show success message
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Ride scheduled successfully!'),
+          content: Text('✅ Ride scheduled successfully!'),
           backgroundColor: Colors.green,
+          duration: Duration(seconds: 3),
         ),
       );
       
-      // Navigate back
+      // Refresh scheduled rides list to show the newly created ride
+      debugPrint('🚀 Refreshing scheduled rides list...');
+      ref.read(scheduledRidesProvider.notifier).refresh();
+      
+      // Clear the form
+      ref.read(scheduleRideProvider.notifier).reset();
+      
+      // Switch to History tab to show the newly created ride ✨
       if (context.mounted) {
-        Navigator.of(context).pop();
+        debugPrint('🚀 Switching to History tab');
+        _tabController.animateTo(1); // Switch to History tab (index 1)
       }
+    } else if (context.mounted) {
+      debugPrint('🚀 Schedule ride failed');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('❌ Failed to schedule ride'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 

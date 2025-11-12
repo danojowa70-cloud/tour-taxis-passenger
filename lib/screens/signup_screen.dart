@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../widgets/inputs.dart';
+import '../services/instant_ride_notifications_service.dart';
+import '../services/scheduled_ride_notifications_service.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -50,6 +52,15 @@ class _SignupScreenState extends State<SignupScreen> {
       }
       
       if (!mounted) return;
+      
+      // Start listening for ride notifications after successful signup
+      final userId = authResponse.user?.id;
+      if (userId != null) {
+        InstantRideNotificationsService.listenForRideUpdates(userId);
+        ScheduledRideNotificationsService.listenForRideUpdates(userId);
+        debugPrint('✅ Started listening for ride notifications for new user: $userId');
+      }
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Welcome $name! Your account has been created successfully.')),
       );

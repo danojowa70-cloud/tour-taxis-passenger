@@ -57,4 +57,30 @@ export async function getNearbyDrivers(req: Request, res: Response) {
   }
 }
 
+const acceptRideSchema = z.object({
+  driverId: z.string().min(1),
+});
+
+export async function acceptRide(req: Request, res: Response) {
+  try {
+    const rideId = z.string().min(1).parse(req.params.rideId);
+    const { driverId } = acceptRideSchema.parse(req.body);
+    
+    const result = await RidesService.acceptRide(rideId, driverId);
+    
+    if (!result.success) {
+      return res.status(400).json({ error: result.message || 'Failed to accept ride' });
+    }
+    
+    return res.json({ 
+      success: true, 
+      message: 'Ride accepted successfully',
+      ride: result.ride,
+      driver: result.driver 
+    });
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message || 'Invalid request' });
+  }
+}
+
 

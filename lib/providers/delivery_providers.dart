@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:math';
 import '../models/delivery.dart';
+import 'delivery_notification_provider.dart';
 
 // Service for calculating delivery costs and generating tracking numbers
 class DeliveryService {
@@ -266,15 +267,69 @@ class DeliveryBookingNotifier extends StateNotifier<DeliveryBookingState> {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
-      // Simulate booking API call
-      await Future.delayed(const Duration(seconds: 2));
-
       final trackingNumber = DeliveryService.generateTrackingNumber();
       final totalCost = state.estimatedCost!;
       final estimatedDelivery = state.estimatedDelivery!;
 
+      // Get current user
+      final supabase = Supabase.instance.client;
+      final user = supabase.auth.currentUser;
+      if (user == null) {
+        throw Exception('User not authenticated');
+      }
+
+      // Prepare cargo request data
+      final cargoRequestData = {
+        'user_id': user.id,
+        'tracking_number': trackingNumber,
+        'vehicle_type': state.selectedVehicleType!.name,
+        'priority': state.selectedPriority.name,
+        'sender_name': state.sender!.name,
+        'sender_phone': state.sender!.phone,
+        'sender_email': state.sender!.email,
+        'sender_address': state.sender!.address,
+        'sender_city': state.sender!.city,
+        'sender_state': state.sender!.state,
+        'sender_postal_code': state.sender!.postalCode,
+        'sender_country': state.sender!.country,
+        'sender_company': state.sender!.company,
+        'recipient_name': state.recipient!.name,
+        'recipient_phone': state.recipient!.phone,
+        'recipient_email': state.recipient!.email,
+        'recipient_address': state.recipient!.address,
+        'recipient_city': state.recipient!.city,
+        'recipient_state': state.recipient!.state,
+        'recipient_postal_code': state.recipient!.postalCode,
+        'recipient_country': state.recipient!.country,
+        'recipient_company': state.recipient!.company,
+        'package_description': state.package!.description,
+        'package_type': state.package!.type.name,
+        'package_weight': state.package!.weight,
+        'package_length': state.package!.length,
+        'package_width': state.package!.width,
+        'package_height': state.package!.height,
+        'package_declared_value': state.package!.declaredValue,
+        'package_is_fragile': state.package!.isFragile,
+        'package_requires_refrigeration': state.package!.requiresRefrigeration,
+        'package_special_instructions': state.package!.specialInstructions,
+        'pickup_date': state.pickupDate!.toIso8601String().split('T')[0],
+        'pickup_time': '${state.pickupTime!.hour.toString().padLeft(2, '0')}:${state.pickupTime!.minute.toString().padLeft(2, '0')}',
+        'status': 'pending',
+        'notes': state.notes,
+      };
+
+      // Send to Supabase
+      debugPrint('📦 Submitting cargo request to Supabase...');
+      final response = await supabase
+          .from('cargo_requests')
+          .insert(cargoRequestData)
+          .select()
+          .single();
+
+      debugPrint('✅ Cargo request created: ${response['id']}');
+
       final booking = DeliveryBooking(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: response['id'],
         trackingNumber: trackingNumber,
         sender: state.sender!,
         recipient: state.recipient!,
@@ -290,10 +345,10 @@ class DeliveryBookingNotifier extends StateNotifier<DeliveryBookingState> {
         updates: [
           DeliveryUpdate(
             id: '1',
-            deliveryId: DateTime.now().millisecondsSinceEpoch.toString(),
+            deliveryId: response['id'],
             status: DeliveryStatus.pending,
             timestamp: DateTime.now(),
-            message: 'Delivery booking created',
+            message: 'Delivery booking created - awaiting admin confirmation',
             location: state.sender!.city,
           ),
         ],
@@ -306,6 +361,7 @@ class DeliveryBookingNotifier extends StateNotifier<DeliveryBookingState> {
       state = state.copyWith(isLoading: false);
       return booking;
     } catch (e) {
+      debugPrint('❌ Error confirming booking: $e');
       state = state.copyWith(
         isLoading: false,
         error: 'Failed to confirm booking: $e',
@@ -323,11 +379,14 @@ class DeliveryBookingNotifier extends StateNotifier<DeliveryBookingState> {
 
 // Notifier for managing delivery list
 class DeliveryListNotifier extends StateNotifier<AsyncValue<List<DeliveryBooking>>> {
-  DeliveryListNotifier() : super(const AsyncValue.loading()) {
+  DeliveryListNotifier(this.ref) : super(const AsyncValue.loading()) {
     _loadDeliveries();
+    _setupRealtimeSubscription();
   }
 
+  final Ref ref;
   final _supabase = Supabase.instance.client;
+  RealtimeChannel? _realtimeChannel;
 
   Future<void> _loadDeliveries() async {
     try {
@@ -337,15 +396,115 @@ class DeliveryListNotifier extends StateNotifier<AsyncValue<List<DeliveryBooking
         return;
       }
 
-      // In a real app, this would load from Supabase
-      // For now, create mock data
-      await _loadMockDeliveries();
+      debugPrint('📦 Loading deliveries from Supabase for user: ${user.id}');
+      
+      // Load from Supabase cargo_requests table
+      final response = await _supabase
+          .from('cargo_requests')
+          .select()
+          .eq('user_id', user.id)
+          .order('created_at', ascending: false);
+
+      debugPrint('✅ Loaded ${response.length} cargo requests');
+      
+      final deliveries = (response as List)
+          .map((json) => _mapCargoRequestToDelivery(json))
+          .toList();
+      
+      state = AsyncValue.data(deliveries);
     } catch (error, stackTrace) {
-      debugPrint('Failed to load deliveries: $error');
+      debugPrint('❌ Failed to load deliveries: $error');
       state = AsyncValue.error(error, stackTrace);
     }
   }
 
+  DeliveryBooking _mapCargoRequestToDelivery(Map<String, dynamic> json) {
+    return DeliveryBooking(
+      id: json['id'],
+      trackingNumber: json['tracking_number'],
+      sender: ContactDetails(
+        name: json['sender_name'],
+        phone: json['sender_phone'],
+        email: json['sender_email'],
+        address: json['sender_address'],
+        city: json['sender_city'],
+        state: json['sender_state'],
+        postalCode: json['sender_postal_code'],
+        country: json['sender_country'] ?? 'Kenya',
+        company: json['sender_company'],
+      ),
+      recipient: ContactDetails(
+        name: json['recipient_name'],
+        phone: json['recipient_phone'],
+        email: json['recipient_email'],
+        address: json['recipient_address'],
+        city: json['recipient_city'],
+        state: json['recipient_state'],
+        postalCode: json['recipient_postal_code'],
+        country: json['recipient_country'] ?? 'Kenya',
+        company: json['recipient_company'],
+      ),
+      package: PackageDetails(
+        description: json['package_description'],
+        type: PackageType.values.firstWhere(
+          (e) => e.name == json['package_type'],
+          orElse: () => PackageType.other,
+        ),
+        weight: (json['package_weight'] as num).toDouble(),
+        length: (json['package_length'] as num).toDouble(),
+        width: (json['package_width'] as num).toDouble(),
+        height: (json['package_height'] as num).toDouble(),
+        declaredValue: json['package_declared_value']?.toDouble(),
+        isFragile: json['package_is_fragile'] ?? false,
+        requiresRefrigeration: json['package_requires_refrigeration'] ?? false,
+        specialInstructions: json['package_special_instructions'],
+      ),
+      vehicleType: DeliveryVehicleType.values.firstWhere(
+        (e) => e.name == json['vehicle_type'],
+        orElse: () => DeliveryVehicleType.cargoPlane,
+      ),
+      priority: DeliveryPriority.values.firstWhere(
+        (e) => e.name == json['priority'],
+        orElse: () => DeliveryPriority.standard,
+      ),
+      status: _mapStatusToEnum(json['status']),
+      createdAt: DateTime.parse(json['created_at']),
+      estimatedDeliveryTime: json['estimated_delivery_date'] != null
+          ? DateTime.parse(json['estimated_delivery_date'])
+          : null,
+      totalCost: json['estimated_cost']?.toDouble() ?? 0.0,
+      notes: json['notes'],
+      updates: [],
+    );
+  }
+
+  DeliveryStatus _mapStatusToEnum(String? status) {
+    switch (status?.toLowerCase()) {
+      case 'pending':
+        return DeliveryStatus.pending;
+      case 'accepted':
+      case 'confirmed':
+        return DeliveryStatus.confirmed;
+      case 'rejected':
+      case 'cancelled':
+        return DeliveryStatus.cancelled;
+      case 'picked_up':
+        return DeliveryStatus.pickedUp;
+      case 'in_transit':
+        return DeliveryStatus.inTransit;
+      case 'out_for_delivery':
+        return DeliveryStatus.outForDelivery;
+      case 'delivered':
+        return DeliveryStatus.delivered;
+      case 'failed':
+        return DeliveryStatus.failed;
+      default:
+        return DeliveryStatus.pending;
+    }
+  }
+
+  // Removed: _loadMockDeliveries() - no longer needed, using real Supabase data
+  /*
   Future<void> _loadMockDeliveries() async {
     // Get actual user name
     final user = _supabase.auth.currentUser;
@@ -428,6 +587,7 @@ class DeliveryListNotifier extends StateNotifier<AsyncValue<List<DeliveryBooking
 
     state = AsyncValue.data(mockDeliveries);
   }
+  */
 
   void addDelivery(DeliveryBooking delivery) {
     final currentDeliveries = state.asData?.value ?? [];
@@ -460,6 +620,95 @@ class DeliveryListNotifier extends StateNotifier<AsyncValue<List<DeliveryBooking
   void refresh() {
     _loadDeliveries();
   }
+
+  void _setupRealtimeSubscription() {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return;
+
+    debugPrint('🔌 Setting up realtime subscription for cargo_requests');
+
+    _realtimeChannel = _supabase
+        .channel('cargo_requests_${user.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'cargo_requests',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'user_id',
+            value: user.id,
+          ),
+          callback: (payload) {
+            debugPrint('🔔 Realtime update received: ${payload.eventType}');
+            
+            // Reload deliveries when there's a change
+            _loadDeliveries();
+            
+            // Show notification for status updates
+            if (payload.eventType == PostgresChangeEvent.update) {
+              final newRecord = payload.newRecord;
+              final oldStatus = payload.oldRecord['status'];
+              final newStatus = newRecord['status'];
+              
+              // Log status changes with detailed messages
+              if (oldStatus != newStatus) {
+                final trackingNumber = newRecord['tracking_number'];
+                
+                if (newStatus == 'accepted') {
+                  final cost = newRecord['estimated_cost'];
+                  debugPrint('🎉 DELIVERY ACCEPTED!');
+                  debugPrint('   Tracking: $trackingNumber');
+                  debugPrint('   Cost: KSh $cost');
+                  debugPrint('   ➡️ User will see this update in the tracking screen');
+                  
+                  // Trigger in-app notification
+                  ref.read(deliveryNotificationProvider.notifier).showNotification(
+                    DeliveryNotification(
+                      trackingNumber: trackingNumber,
+                      deliveryId: newRecord['id'],
+                      status: 'accepted',
+                      title: '🎉 Delivery Accepted!',
+                      message: 'Your cargo $trackingNumber has been accepted. Cost: KSh $cost',
+                      timestamp: DateTime.now(),
+                    ),
+                  );
+                } else if (newStatus == 'rejected') {
+                  final reason = newRecord['rejection_reason'] ?? 'Not specified';
+                  debugPrint('❌ DELIVERY REJECTED');
+                  debugPrint('   Tracking: $trackingNumber');
+                  debugPrint('   Reason: $reason');
+                  debugPrint('   ➡️ User will see this update in the tracking screen');
+                  
+                  // Trigger in-app notification
+                  ref.read(deliveryNotificationProvider.notifier).showNotification(
+                    DeliveryNotification(
+                      trackingNumber: trackingNumber,
+                      deliveryId: newRecord['id'],
+                      status: 'rejected',
+                      title: 'Delivery Rejected',
+                      message: 'Your cargo $trackingNumber was rejected. Reason: $reason',
+                      timestamp: DateTime.now(),
+                    ),
+                  );
+                } else if (newStatus == 'picked_up') {
+                  debugPrint('📦 PACKAGE PICKED UP');
+                  debugPrint('   Tracking: $trackingNumber');
+                } else if (newStatus == 'delivered') {
+                  debugPrint('✅ DELIVERY COMPLETE');
+                  debugPrint('   Tracking: $trackingNumber');
+                }
+              }
+            }
+          },
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _realtimeChannel?.unsubscribe();
+    super.dispose();
+  }
 }
 
 // Provider instances
@@ -472,7 +721,7 @@ final deliveryBookingProvider = StateNotifierProvider<DeliveryBookingNotifier, D
 );
 
 final deliveryListProvider = StateNotifierProvider<DeliveryListNotifier, AsyncValue<List<DeliveryBooking>>>(
-  (ref) => DeliveryListNotifier(),
+  (ref) => DeliveryListNotifier(ref),
 );
 
 // Helper providers

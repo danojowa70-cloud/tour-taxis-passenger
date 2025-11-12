@@ -1,7 +1,10 @@
 enum BoardingPassStatus {
   upcoming,
+  confirmed,
+  checkedIn,
   boarding,
   departed,
+  arrived,
   completed,
   cancelled,
 }
@@ -75,10 +78,7 @@ class BoardingPass {
       operatorName: json['operator_name'],
       operatorLogo: json['operator_logo'] ?? '',
       qrCode: json['qr_code'],
-      status: BoardingPassStatus.values.firstWhere(
-        (e) => e.name == json['status'],
-        orElse: () => BoardingPassStatus.upcoming,
-      ),
+      status: _parseStatus(json['status']),
       createdAt: DateTime.parse(json['created_at']),
       updatedAt: json['updated_at'] != null 
           ? DateTime.parse(json['updated_at']) 
@@ -90,6 +90,31 @@ class BoardingPass {
     );
   }
 
+  // Helper to parse status from database (handles snake_case)
+  static BoardingPassStatus _parseStatus(String? status) {
+    if (status == null) return BoardingPassStatus.upcoming;
+    
+    // Convert snake_case to camelCase
+    final normalizedStatus = status.replaceAll('_', '').toLowerCase();
+    
+    for (var s in BoardingPassStatus.values) {
+      if (s.name.toLowerCase() == normalizedStatus) {
+        return s;
+      }
+    }
+    
+    // Fallback for specific cases
+    switch (status) {
+      case 'checked_in':
+        return BoardingPassStatus.checkedIn;
+      case 'pending':
+      case 'upcoming':
+        return BoardingPassStatus.upcoming;
+      default:
+        return BoardingPassStatus.upcoming;
+    }
+  }
+  
   // Convert to JSON for Supabase
   Map<String, dynamic> toJson() {
     return {
@@ -176,10 +201,16 @@ class BoardingPass {
     switch (status) {
       case BoardingPassStatus.upcoming:
         return 'Upcoming';
+      case BoardingPassStatus.confirmed:
+        return 'Confirmed';
+      case BoardingPassStatus.checkedIn:
+        return 'Checked In';
       case BoardingPassStatus.boarding:
         return 'Boarding';
       case BoardingPassStatus.departed:
         return 'Departed';
+      case BoardingPassStatus.arrived:
+        return 'Arrived';
       case BoardingPassStatus.completed:
         return 'Completed';
       case BoardingPassStatus.cancelled:
@@ -189,11 +220,14 @@ class BoardingPass {
 
   bool get isActive {
     return status == BoardingPassStatus.upcoming || 
+           status == BoardingPassStatus.confirmed ||
+           status == BoardingPassStatus.checkedIn ||
            status == BoardingPassStatus.boarding;
   }
 
   bool get isPast {
     return status == BoardingPassStatus.departed || 
+           status == BoardingPassStatus.arrived ||
            status == BoardingPassStatus.completed ||
            status == BoardingPassStatus.cancelled;
   }

@@ -4,17 +4,83 @@ import '../providers/app_providers.dart';
 import '../providers/auth_providers.dart';
 import '../providers/real_ride_providers.dart';
 import '../providers/boarding_pass_providers.dart';
+import '../services/socket_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/ride.dart';
 import '../models/payment.dart';
 import '../models/boarding_pass.dart';
 
-class DashboardScreen extends ConsumerWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends ConsumerState<DashboardScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _logAuthState('Dashboard initState');
+    _initializeSocket();
+  }
+  
+  void _logAuthState(String context) {
+    final client = Supabase.instance.client;
+    final currentUser = client.auth.currentUser;
+    final session = client.auth.currentSession;
+    
+    debugPrint('🔐 === AUTH STATE LOG: $context ===');
+    debugPrint('🔐 Current User ID: ${currentUser?.id}');
+    debugPrint('🔐 Current User Email: ${currentUser?.email}');
+    debugPrint('🔐 Session User ID: ${session?.user.id}');
+    debugPrint('🔐 Session User Email: ${session?.user.email}');
+    debugPrint('🔐 User IDs Match: ${currentUser?.id == session?.user.id}');
+    debugPrint('🔐 === END AUTH STATE LOG ===');
+  }
+
+  Future<void> _initializeSocket() async {
+    try {
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) {
+        debugPrint('⚠️ Cannot initialize socket: User not authenticated');
+        return;
+      }
+
+      final userProfile = ref.read(userProfileProvider);
+      final userName = userProfile.value?['name'] ?? 
+                      Supabase.instance.client.auth.currentUser?.userMetadata?['full_name'] ?? 
+                      Supabase.instance.client.auth.currentUser?.email?.split('@')[0] ?? 
+                      'Passenger';
+      
+      // Get user phone - if not available, socket connection will still work
+      // but ride requests will require a valid phone number
+      final userPhone = userProfile.value?['phone'] ?? 
+                       Supabase.instance.client.auth.currentUser?.phone ?? 
+                       '';
+      
+      // Skip socket connection if no phone number
+      if (userPhone.isEmpty) {
+        debugPrint('⚠️ No phone number available for socket connection');
+        return;
+      }
+
+      debugPrint('🔌 Initializing Socket.IO for passenger: $userId');
+      await SocketService.instance.connectPassenger(
+        passengerId: userId,
+        name: userName,
+        phone: userPhone,
+      );
+      debugPrint('✅ Socket.IO initialized successfully');
+    } catch (e) {
+      debugPrint('⚠️ Failed to initialize Socket.IO: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final userRides = ref.watch(userRidesProvider);
-    final payments = ref.watch(paymentsProvider);
+    final paymentsAsync = ref.watch(paymentsProvider);
     final theme = Theme.of(context);
     
     return Scaffold(
@@ -42,7 +108,16 @@ class DashboardScreen extends ConsumerWidget {
                     _buildBoardingPassesSection(context, ref),
                     
                     // Recent Activity
-                    _buildRecentActivity(context, userRides, payments),
+                    paymentsAsync.when(
+                      data: (payments) => _buildRecentActivity(context, userRides, payments),
+                      loading: () => const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(20),
+                          child: CircularProgressIndicator(),
+                        ),
+                      ),
+                      error: (_, __) => _buildRecentActivity(context, userRides, []),
+                    ),
                     
                     const SizedBox(height: 100), // Space for floating button
                   ],
@@ -83,17 +158,21 @@ class DashboardScreen extends ConsumerWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Hi $firstName, $greeting 👋',
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: theme.colorScheme.onSurface,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Hi $firstName, $greeting 👋',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           Row(
             children: [
@@ -234,10 +313,10 @@ class DashboardScreen extends ConsumerWidget {
             children: [
               Expanded(
                 child: _QuickActionCard(
-                  icon: Icons.account_balance_wallet,
-                  title: 'Wallet',
-                  subtitle: 'Manage payments',
-                  onTap: () => Navigator.of(context).pushNamed('/wallet'),
+                  icon: Icons.payment,
+                  title: 'Payments',
+                  subtitle: 'Payment methods',
+                  onTap: () => Navigator.of(context).pushNamed('/payment-methods', arguments: 0.0),
                 ),
               ),
               const SizedBox(width: 12),
@@ -359,15 +438,29 @@ class DashboardScreen extends ConsumerWidget {
           const SizedBox(height: 16),
           userRides.when(
             data: (rides) {
+              debugPrint('🚗 Dashboard - Loaded ${rides.length} rides');
+              if (rides.isNotEmpty) {
+                debugPrint('🚗 First ride: ${rides.first.id} - ${rides.first.pickupLocation} to ${rides.first.dropoffLocation}');
+              }
               if (rides.isEmpty) {
                 return _buildEmptyRidesState(theme);
               }
               return Column(
-                children: rides.take(3).map((ride) => _ModernRideCard(ride: ride)).toList(),
+                children: rides.take(3).map((ride) => _ModernRideCard(
+                  ride: ride,
+                  onTap: () => _showRideDetails(context, ride),
+                )).toList(),
               );
             },
-            loading: () => _buildRidesLoading(),
-            error: (error, stack) => _buildRidesError(theme, error),
+            loading: () {
+              debugPrint('⏳ Dashboard - Loading rides...');
+              return _buildRidesLoading();
+            },
+            error: (error, stack) {
+              debugPrint('❌ Dashboard - Error loading rides: $error');
+              debugPrint('Stack: $stack');
+              return _buildRidesError(theme, error);
+            },
           ),
         ],
       ),
@@ -476,6 +569,180 @@ class DashboardScreen extends ConsumerWidget {
     );
   }
   
+  void _showRideDetails(BuildContext context, Ride ride) {
+    final theme = Theme.of(context);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.75,
+        decoration: BoxDecoration(
+          color: theme.scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            // Handle bar
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            
+            // Content
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Ride Details',
+                      style: theme.textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    
+                    // Route card
+                    _buildDetailCard(
+                      theme,
+                      'Route',
+                      [
+                        _buildDetailRow(theme, 'Pickup', ride.pickupLocation, Icons.my_location),
+                        const Divider(height: 24),
+                        _buildDetailRow(theme, 'Dropoff', ride.dropoffLocation, Icons.place),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // Driver & Trip info
+                    _buildDetailCard(
+                      theme,
+                      'Trip Information',
+                      [
+                        _buildDetailRow(theme, 'Driver', ride.driverName ?? 'Unknown', Icons.person),
+                        const Divider(height: 24),
+                        _buildDetailRow(theme, 'Date & Time', _formatFullDateTime(ride.dateTime), Icons.calendar_today),
+                        const Divider(height: 24),
+                        _buildDetailRow(theme, 'Status', ride.status, Icons.info_outline),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // Fare card
+                    _buildDetailCard(
+                      theme,
+                      'Fare Details',
+                      [
+                        _buildDetailRow(
+                          theme,
+                          'Total Fare',
+                          'KSh ${(double.tryParse(ride.fare ?? '0') ?? 0.0).toStringAsFixed(0)}',
+                          Icons.payments,
+                          isHighlighted: true,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildDetailCard(ThemeData theme, String title, List<Widget> children) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline.withValues(alpha: 0.1),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ...children,
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildDetailRow(
+    ThemeData theme,
+    String label,
+    String value,
+    IconData icon, {
+    bool isHighlighted = false,
+  }) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: isHighlighted
+                ? theme.colorScheme.primary.withValues(alpha: 0.1)
+                : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(
+            icon,
+            size: 20,
+            color: isHighlighted
+                ? theme.colorScheme.primary
+                : theme.colorScheme.onSurface.withValues(alpha: 0.6),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                value,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: isHighlighted ? FontWeight.bold : FontWeight.w600,
+                  color: isHighlighted ? theme.colorScheme.primary : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+  
+  String _formatFullDateTime(DateTime dt) {
+    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return '${months[dt.month - 1]} ${dt.day}, ${dt.year} at ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+  
   Widget _buildRidesError(ThemeData theme, Object error) {
     return Container(
       padding: const EdgeInsets.all(24),
@@ -502,11 +769,26 @@ class DashboardScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Please check your connection and try again',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+            error.toString(),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
             ),
             textAlign: TextAlign.center,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: () {
+              // Force refresh
+              ref.invalidate(userRidesProvider);
+            },
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('Retry'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: theme.colorScheme.primary,
+              foregroundColor: Colors.white,
+            ),
           ),
         ],
       ),
@@ -586,30 +868,34 @@ class _QuickActionCard extends StatelessWidget {
 
 class _ModernRideCard extends StatelessWidget {
   final Ride ride;
-  const _ModernRideCard({required this.ride});
+  final VoidCallback? onTap;
+  
+  const _ModernRideCard({required this.ride, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: theme.colorScheme.outline.withValues(alpha: 0.1),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: theme.shadowColor.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: theme.colorScheme.outline.withValues(alpha: 0.1),
           ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
+          boxShadow: [
+            BoxShadow(
+              color: theme.shadowColor.withValues(alpha: 0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
@@ -667,7 +953,7 @@ class _ModernRideCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      'KSh ${ride.fare.toStringAsFixed(0)}',
+                      'KSh ${(double.tryParse(ride.fare ?? '0') ?? 0.0).toStringAsFixed(0)}',
                       style: theme.textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                         color: theme.colorScheme.primary,
@@ -712,7 +998,7 @@ class _ModernRideCard extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      ride.driverName,
+                      ride.driverName ?? 'Unknown Driver',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurface.withValues(alpha: 0.8),
                       ),
@@ -736,6 +1022,7 @@ class _ModernRideCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -972,10 +1259,16 @@ class _BoardingPassCard extends StatelessWidget {
     switch (boardingPass.status) {
       case BoardingPassStatus.upcoming:
         return Colors.blue;
+      case BoardingPassStatus.confirmed:
+        return Colors.indigo;
+      case BoardingPassStatus.checkedIn:
+        return Colors.teal;
       case BoardingPassStatus.boarding:
         return Colors.orange;
       case BoardingPassStatus.departed:
-        return Colors.green;
+        return Colors.purple;
+      case BoardingPassStatus.arrived:
+        return Colors.cyan;
       case BoardingPassStatus.completed:
         return Colors.green;
       case BoardingPassStatus.cancelled:

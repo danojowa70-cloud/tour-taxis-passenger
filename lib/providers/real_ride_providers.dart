@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/ride.dart';
@@ -8,49 +9,95 @@ final userRidesProvider = FutureProvider<List<Ride>>((ref) async {
   final supabase = ref.watch(supabaseProvider);
   final user = supabase.auth.currentUser;
   
-  if (user == null) return [];
+  debugPrint('🔍 userRidesProvider - Fetching rides for user: ${user?.id}');
+  
+  if (user == null) {
+    debugPrint('⚠️ userRidesProvider - No authenticated user');
+    return [];
+  }
   
   try {
-    // Get rides for the current user with driver information
-    final ridesData = await supabase
-        .from('rides')
-        .select('''
-          *,
-          drivers(
-            id,
-            name,
-            phone,
-            vehicle_type,
-            vehicle_number,
-            vehicle_make,
-            vehicle_model,
-            vehicle_plate,
-            rating,
-            is_online,
-            is_available
-          )
-        ''')
-        .eq('passenger_id', user.id)
-        .order('created_at', ascending: false)
-        .limit(20);
+    // Get user's phone number from profile or auth metadata
+    String? userPhone;
+    try {
+      final profile = await supabase
+          .from('passengers')
+          .select('phone')
+          .eq('auth_user_id', user.id)
+          .maybeSingle();
+      userPhone = profile?['phone'] as String?;
+    } catch (_) {
+      userPhone = user.phone;
+    }
     
-    return ridesData.map<Ride>((rideData) {
+    // Get rides for the current user - query by passenger_id OR passenger_phone
+    // This handles cases where rides were created before proper user auth
+    debugPrint('📞 userRidesProvider - User phone: $userPhone');
+    debugPrint('🔍 userRidesProvider - Querying rides with: passenger_id=${user.id}${userPhone != null ? " OR passenger_phone=$userPhone" : ""}');
+    
+    List<dynamic> ridesData;
+    try {
+      ridesData = await supabase
+          .from('rides')
+          .select('''
+            *,
+            drivers(
+              id,
+              name,
+              phone,
+              vehicle_type,
+              vehicle_number,
+              vehicle_model,
+              vehicle_plate,
+              rating,
+              is_online,
+              is_available
+            )
+          ''')
+          .or('passenger_id.eq.${user.id}${userPhone != null ? ",passenger_phone.eq.$userPhone" : ""}')
+          .order('created_at', ascending: false)
+          .limit(20);
+    } catch (e) {
+      debugPrint('⚠️ userRidesProvider - Relation join failed, falling back to simple select: $e');
+      ridesData = await supabase
+          .from('rides')
+          .select()
+          .or('passenger_id.eq.${user.id}${userPhone != null ? ",passenger_phone.eq.$userPhone" : ""}')
+          .order('created_at', ascending: false)
+          .limit(20);
+    }
+    
+    debugPrint('✅ userRidesProvider - Found ${ridesData.length} rides');
+    
+    final rides = ridesData.map<Ride>((rideData) {
       final driver = rideData['drivers'] as Map<String, dynamic>?;
       
       return Ride(
         id: rideData['id'],
-        pickupLocation: rideData['pickup_address'] ?? 'Unknown Location',
-        dropoffLocation: rideData['destination_address'] ?? 'Unknown Destination',
+        passengerId: rideData['passenger_id'] ?? '',
+        passengerName: rideData['passenger_name'] ?? 'Passenger',
+        passengerPhone: rideData['passenger_phone'] ?? '',
+        pickupLatitude: (rideData['pickup_latitude'] as num?)?.toDouble() ?? 0.0,
+        pickupLongitude: (rideData['pickup_longitude'] as num?)?.toDouble() ?? 0.0,
+        pickupAddress: rideData['pickup_address'] ?? 'Unknown Location',
+        destinationLatitude: (rideData['destination_latitude'] as num?)?.toDouble() ?? 0.0,
+        destinationLongitude: (rideData['destination_longitude'] as num?)?.toDouble() ?? 0.0,
+        destinationAddress: rideData['destination_address'] ?? 'Unknown Destination',
         driverName: driver?['name'] ?? rideData['driver_name'] ?? 'Unknown Driver',
-        driverCar: driver != null 
-            ? '${driver['vehicle_make'] ?? driver['vehicle_type'] ?? 'Unknown'} ${driver['vehicle_model'] ?? ''} - ${driver['vehicle_plate'] ?? driver['vehicle_number'] ?? 'Unknown'}'
+        driverVehicle: driver != null 
+            ? '${driver['vehicle_type'] ?? 'Unknown'} ${driver['vehicle_model'] ?? ''} - ${driver['vehicle_plate'] ?? driver['vehicle_number'] ?? 'Unknown'}'
             : 'Unknown Vehicle',
-        fare: (rideData['fare'] as num?)?.toDouble() ?? 0.0,
+        fare: (rideData['fare'] as num?)?.toString() ?? '0.0',
         status: _mapStatus(rideData['status']),
-        dateTime: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
+        requestedAt: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
       );
     }).toList();
-  } catch (e) {
+    
+    debugPrint('✅ userRidesProvider - Mapped ${rides.length} ride objects');
+    return rides;
+  } catch (e, stackTrace) {
+    debugPrint('❌ userRidesProvider - Error: $e');
+    debugPrint('Stack: $stackTrace');
     // Return empty list on error
     return [];
   }
@@ -186,6 +233,19 @@ class RideDataService {
     if (user == null) return [];
     
     try {
+      // Get user's phone number
+      String? userPhone;
+      try {
+        final profile = await _client
+            .from('passengers')
+            .select('phone')
+            .eq('auth_user_id', user.id)
+            .maybeSingle();
+        userPhone = profile?['phone'] as String?;
+      } catch (_) {
+        userPhone = user.phone;
+      }
+      
       final ridesData = await _client
           .from('rides')
           .select('''
@@ -204,7 +264,7 @@ class RideDataService {
               is_available
             )
           ''')
-          .eq('passenger_id', user.id)
+          .or('passenger_id.eq.${user.id}${userPhone != null ? ",passenger_phone.eq.$userPhone" : ""}')
           .order('created_at', ascending: false)
           .limit(limit);
       
@@ -213,15 +273,22 @@ class RideDataService {
         
         return Ride(
           id: rideData['id'],
-          pickupLocation: rideData['pickup_address'] ?? 'Unknown Location',
-          dropoffLocation: rideData['destination_address'] ?? 'Unknown Destination',
+          passengerId: rideData['passenger_id'] ?? '',
+          passengerName: rideData['passenger_name'] ?? 'Passenger',
+          passengerPhone: rideData['passenger_phone'] ?? '',
+          pickupLatitude: (rideData['pickup_latitude'] as num?)?.toDouble() ?? 0.0,
+          pickupLongitude: (rideData['pickup_longitude'] as num?)?.toDouble() ?? 0.0,
+          pickupAddress: rideData['pickup_address'] ?? 'Unknown Location',
+          destinationLatitude: (rideData['destination_latitude'] as num?)?.toDouble() ?? 0.0,
+          destinationLongitude: (rideData['destination_longitude'] as num?)?.toDouble() ?? 0.0,
+          destinationAddress: rideData['destination_address'] ?? 'Unknown Destination',
           driverName: driver?['name'] ?? rideData['driver_name'] ?? 'Unknown Driver',
-          driverCar: driver != null 
+          driverVehicle: driver != null 
               ? '${driver['vehicle_make'] ?? driver['vehicle_type'] ?? 'Unknown'} ${driver['vehicle_model'] ?? ''} - ${driver['vehicle_plate'] ?? driver['vehicle_number'] ?? 'Unknown'}'
               : 'Unknown Vehicle',
-          fare: (rideData['fare'] as num?)?.toDouble() ?? 0.0,
+          fare: (rideData['fare'] as num?)?.toString() ?? '0.0',
           status: _mapStatus(rideData['status']),
-          dateTime: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
+          requestedAt: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
         );
       }).toList();
     } catch (e) {
@@ -257,15 +324,22 @@ class RideDataService {
       
       return Ride(
         id: rideData['id'],
-        pickupLocation: rideData['pickup_address'] ?? 'Unknown Location',
-        dropoffLocation: rideData['destination_address'] ?? 'Unknown Destination',
+        passengerId: rideData['passenger_id'] ?? '',
+        passengerName: rideData['passenger_name'] ?? 'Passenger',
+        passengerPhone: rideData['passenger_phone'] ?? '',
+        pickupLatitude: (rideData['pickup_latitude'] as num?)?.toDouble() ?? 0.0,
+        pickupLongitude: (rideData['pickup_longitude'] as num?)?.toDouble() ?? 0.0,
+        pickupAddress: rideData['pickup_address'] ?? 'Unknown Location',
+        destinationLatitude: (rideData['destination_latitude'] as num?)?.toDouble() ?? 0.0,
+        destinationLongitude: (rideData['destination_longitude'] as num?)?.toDouble() ?? 0.0,
+        destinationAddress: rideData['destination_address'] ?? 'Unknown Destination',
         driverName: driver?['name'] ?? rideData['driver_name'] ?? 'Unknown Driver',
-        driverCar: driver != null 
+        driverVehicle: driver != null 
             ? '${driver['vehicle_make'] ?? driver['vehicle_type'] ?? 'Unknown'} ${driver['vehicle_model'] ?? ''} - ${driver['vehicle_plate'] ?? driver['vehicle_number'] ?? 'Unknown'}'
             : 'Unknown Vehicle',
-        fare: (rideData['fare'] as num?)?.toDouble() ?? 0.0,
+        fare: (rideData['fare'] as num?)?.toString() ?? '0.0',
         status: _mapStatus(rideData['status']),
-        dateTime: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
+        requestedAt: DateTime.tryParse(rideData['created_at']) ?? DateTime.now(),
       );
     } catch (e) {
       // Return null on error

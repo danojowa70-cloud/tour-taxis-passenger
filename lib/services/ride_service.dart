@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class RideService {
@@ -17,10 +18,35 @@ class RideService {
     required double distanceMeters,
     required double durationSeconds,
     required double fare,
+    required String vehicleTypeId, // 'car' | 'suv' | 'bike'
   }) async {
-    // Insert into rides (passenger fields kept for driver app compatibility)
-    final insertRide = await _client.from('rides').insert({
-      'passenger_id': _client.auth.currentUser?.id ?? passengerPhone,
+    // IMPORTANT: Create/update passenger FIRST to satisfy foreign key constraint
+    final authUserId = _client.auth.currentUser?.id;
+    String? passengerId;
+    
+    if (authUserId != null) {
+      try {
+        // Upsert passenger by auth_user_id to ensure passenger exists
+        final passenger = await _client
+            .from('passengers')
+            .upsert({
+              'auth_user_id': authUserId,
+              'email': _client.auth.currentUser?.email,
+              'name': passengerName,
+              'phone': passengerPhone,
+            }, onConflict: 'auth_user_id')
+            .select()
+            .single();
+        passengerId = passenger['id'] as String;
+        debugPrint('✅ Passenger record created/updated: $passengerId');
+      } catch (e) {
+        debugPrint('⚠️ Failed to create passenger record: $e');
+        // Continue without passenger_id if it fails
+      }
+    }
+    
+    // Insert into rides with passenger_id if available
+    final rideData = {
       'passenger_name': passengerName,
       'passenger_phone': passengerPhone,
       'pickup_latitude': pickupLat,
@@ -35,31 +61,33 @@ class RideService {
       'duration_text': '${(durationSeconds / 60).round()} min',
       'fare': fare,
       'status': 'requested',
-    }).select().single();
+      'vehicle_type': vehicleTypeId,
+    };
+    
+    // Only add passenger_id if we successfully created the passenger
+    if (passengerId != null) {
+      rideData['passenger_id'] = passengerId;
+    }
+    
+    final insertRide = await _client
+        .from('rides')
+        .insert(rideData)
+        .select()
+        .single();
 
     final rideId = insertRide['id'] as String;
 
-    // Link to passengers table if exists (best-effort)
-    final authUserId = _client.auth.currentUser?.id;
-    if (authUserId != null) {
-      // upsert passenger by auth_user_id
-      final passenger = await _client
-          .from('passengers')
-          .upsert({
-            'auth_user_id': authUserId,
-            'email': _client.auth.currentUser?.email,
-            'name': passengerName,
-            'phone': passengerPhone,
-          }, onConflict: 'auth_user_id')
-          .select()
-          .single();
-      final passengerId = passenger['id'] as String;
-
-      // link row
-      await _client.from('ride_passenger_link').upsert({
-        'ride_id': rideId,
-        'passenger_id': passengerId,
-      });
+    // Create ride_passenger_link if we have both IDs
+    if (passengerId != null) {
+      try {
+        await _client.from('ride_passenger_link').upsert({
+          'ride_id': rideId,
+          'passenger_id': passengerId,
+        });
+        debugPrint('✅ Ride-passenger link created');
+      } catch (e) {
+        debugPrint('⚠️ Failed to create ride-passenger link: $e');
+      }
     }
 
     // Write an initial ride event for realtime/history
@@ -77,16 +105,19 @@ class RideService {
         'pickup_lng': pickupLng,
         'dest_lat': destLat,
         'dest_lng': destLng,
+        'requested_vehicle_type': vehicleTypeId,
       }
     });
 
-    // Find and notify nearby drivers
-    await _findAndNotifyDrivers(rideId, pickupLat, pickupLng, fare);
+    // Find and notify nearby drivers using Supabase
+    await _findAndNotifyDrivers(rideId, pickupLat, pickupLng, fare, vehicleTypeId);
+    
+    debugPrint('✅ Ride created in Supabase and drivers notified.');
 
     return rideId;
   }
 
-  Future<void> _findAndNotifyDrivers(String rideId, double pickupLat, double pickupLng, double fare) async {
+  Future<void> _findAndNotifyDrivers(String rideId, double pickupLat, double pickupLng, double fare, String vehicleTypeId) async {
     try {
       // Find nearby online and available drivers using the database function
       final nearbyDrivers = await _client
@@ -94,9 +125,10 @@ class RideService {
             'lat': pickupLat,
             'lng': pickupLng,
             'radius_km': 10.0, // 10km radius
+            'desired_vehicle': vehicleTypeId,
           });
       
-      print('Found ${nearbyDrivers.length} nearby online drivers');
+      debugPrint('Found ${nearbyDrivers.length} nearby online drivers');
       
       // Filter drivers to ensure they are actually online and available
       final availableDrivers = (nearbyDrivers as List)
@@ -185,6 +217,7 @@ class RideService {
             'lat': lat,
             'lng': lng,
             'radius_km': radiusKm,
+            'desired_vehicle': null,  // Get all vehicle types
           });
       
       return List<Map<String, dynamic>>.from(drivers);
@@ -239,6 +272,61 @@ class RideService {
       'event_type': 'ride:cancel',
       'payload': { 'reason': reason },
     });
+  }
+
+  /// Driver accepts a ride request
+  Future<bool> acceptRide({
+    required String rideId,
+    required String driverId,
+  }) async {
+    try {
+      // Get driver details (throws exception if not found)
+      final driverData = await _client
+          .from('drivers')
+          .select('*')
+          .eq('id', driverId)
+          .single();
+
+      // Update ride with driver information and change status to 'accepted'
+      await _client.from('rides').update({
+        'driver_id': driverId,
+        'status': 'accepted',
+        'accepted_at': DateTime.now().toIso8601String(),
+      }).eq('id', rideId);
+
+      // Create ride event with complete driver data for passenger app
+      await _client.from('ride_events').insert({
+        'ride_id': rideId,
+        'actor': 'driver',
+        'event_type': 'ride:accepted',
+        'payload': {
+          'driver_id': driverId,
+          'driver_name': driverData['name'] ?? 'Driver',
+          'driver_phone': driverData['phone'] ?? '',
+          'driver_car': '${driverData['vehicle_type'] ?? ''} ${driverData['vehicle_model'] ?? ''}'.trim(),
+          'vehicle_type': driverData['vehicle_type'] ?? '',
+          'vehicle_number': driverData['vehicle_number'] ?? '',
+          'vehicle_plate': driverData['vehicle_plate'] ?? '',
+          'driver_rating': driverData['rating']?.toDouble() ?? 4.5,
+          'driver_data': {
+            'id': driverId,
+            'name': driverData['name'] ?? 'Driver',
+            'phone': driverData['phone'] ?? '',
+            'vehicle_model': driverData['vehicle_model'] ?? '',
+            'vehicle_type': driverData['vehicle_type'] ?? '',
+            'vehicle_number': driverData['vehicle_number'] ?? '',
+            'vehicle_plate': driverData['vehicle_plate'] ?? '',
+            'rating': driverData['rating']?.toDouble() ?? 4.5,
+          },
+        }
+      });
+
+      debugPrint('✅ Driver $driverId accepted ride $rideId');
+      return true;
+    } catch (e) {
+      debugPrint('❌ Failed to accept ride: $e');
+      return false;
+    }
   }
 }
 

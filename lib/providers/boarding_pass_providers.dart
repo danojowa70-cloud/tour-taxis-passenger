@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:math';
+import 'dart:convert';
 import '../models/boarding_pass.dart';
 
 // Service for generating QR codes and boarding passes
@@ -45,9 +46,11 @@ class BoardingPassService {
 class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>> {
   BoardingPassNotifier() : super(const AsyncValue.loading()) {
     _loadBoardingPasses();
+    _setupRealtimeSubscription();
   }
 
   final _supabase = Supabase.instance.client;
+  RealtimeChannel? _realtimeChannel;
 
   Future<void> _loadBoardingPasses() async {
     try {
@@ -143,6 +146,7 @@ class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>>
     String? gate,
     String? terminal,
     double? fare,
+    List<PassengerDetail>? passengerDetails,
   }) async {
     try {
       final user = _supabase.auth.currentUser;
@@ -177,6 +181,18 @@ class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>>
       // Insert into Supabase
       final data = boardingPass.toJson();
       data['user_id'] = user.id; // Add user ID for the database
+      
+      // Add passenger details if available
+      if (passengerDetails != null && passengerDetails.isNotEmpty) {
+        data['passenger_details'] = jsonEncode(
+          passengerDetails.map((p) => {
+            'name': p.name,
+            'email': p.email,
+            'phone': p.phone,
+          }).toList(),
+        );
+        debugPrint('👥 Added ${passengerDetails.length} passenger details to booking');
+      }
 
       debugPrint('🚀 Attempting to insert boarding pass data:');
       debugPrint('📝 Data keys: ${data.keys.join(', ')}');
@@ -251,6 +267,41 @@ class BoardingPassNotifier extends StateNotifier<AsyncValue<List<BoardingPass>>>
   void refresh() {
     _loadBoardingPasses();
   }
+  
+  // Setup real-time subscription for boarding pass updates
+  void _setupRealtimeSubscription() {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return;
+    
+    debugPrint('🔔 Setting up real-time subscription for boarding passes');
+    
+    _realtimeChannel = _supabase
+        .channel('boarding_passes_changes')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'boarding_passes',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'user_id',
+            value: user.id,
+          ),
+          callback: (payload) {
+            debugPrint('🔄 Boarding pass update received: ${payload.eventType}');
+            debugPrint('📦 Payload: ${payload.newRecord}');
+            
+            // Reload boarding passes when any change occurs
+            _loadBoardingPasses();
+          },
+        )
+        .subscribe();
+  }
+  
+  @override
+  void dispose() {
+    _realtimeChannel?.unsubscribe();
+    super.dispose();
+  }
 }
 
 // Provider instances
@@ -305,6 +356,31 @@ final boardingPassByIdProvider = Provider.family<BoardingPass?, String>((ref, id
   );
 });
 
+// Passenger detail model
+class PassengerDetail {
+  final String name;
+  final String? email;
+  final String? phone;
+  
+  const PassengerDetail({
+    required this.name,
+    this.email,
+    this.phone,
+  });
+  
+  PassengerDetail copyWith({
+    String? name,
+    String? email,
+    String? phone,
+  }) {
+    return PassengerDetail(
+      name: name ?? this.name,
+      email: email ?? this.email,
+      phone: phone ?? this.phone,
+    );
+  }
+}
+
 // State for premium booking form
 class PremiumBookingState {
   final PremiumVehicleType? selectedVehicleType;
@@ -315,7 +391,8 @@ class PremiumBookingState {
   final DateTime? arrivalDate;
   final TimeOfDay? arrivalTime;
   final int passengers;
-  final String? passengerName;
+  final String? passengerName; // Kept for backward compatibility
+  final List<PassengerDetail> passengerDetails;
   final bool isLoading;
   final String? error;
 
@@ -329,6 +406,7 @@ class PremiumBookingState {
     this.arrivalTime,
     this.passengers = 1,
     this.passengerName,
+    this.passengerDetails = const [],
     this.isLoading = false,
     this.error,
   });
@@ -343,6 +421,7 @@ class PremiumBookingState {
     TimeOfDay? arrivalTime,
     int? passengers,
     String? passengerName,
+    List<PassengerDetail>? passengerDetails,
     bool? isLoading,
     String? error,
   }) {
@@ -356,6 +435,7 @@ class PremiumBookingState {
       arrivalTime: arrivalTime ?? this.arrivalTime,
       passengers: passengers ?? this.passengers,
       passengerName: passengerName ?? this.passengerName,
+      passengerDetails: passengerDetails ?? this.passengerDetails,
       isLoading: isLoading ?? this.isLoading,
       error: error ?? this.error,
     );
@@ -384,13 +464,26 @@ class PremiumBookingState {
   }
 
   bool get canBook {
+    // Check if all required passenger details are filled
+    final hasAllPassengerDetails = passengerDetails.length == passengers &&
+        passengerDetails.every((p) => p.name.trim().length >= 2);
+    
+    debugPrint('🔍 canBook check:');
+    debugPrint('  - selectedVehicleType: $selectedVehicleType');
+    debugPrint('  - origin: $origin');
+    debugPrint('  - destination: $destination');
+    debugPrint('  - departureDate: $departureDate');
+    debugPrint('  - departureTime: $departureTime');
+    debugPrint('  - passengers: $passengers, details count: ${passengerDetails.length}');
+    debugPrint('  - passenger names: ${passengerDetails.map((p) => "${p.name} (${p.name.trim().length} chars)").join(", ")}');
+    debugPrint('  - hasAllPassengerDetails: $hasAllPassengerDetails');
+    
     return selectedVehicleType != null &&
            origin != null &&
            destination != null &&
            departureDate != null &&
            departureTime != null &&
-           passengerName != null &&
-           passengerName!.trim().length >= 2;
+           hasAllPassengerDetails;
   }
 
   double? get estimatedFare {
@@ -412,7 +505,11 @@ class PremiumBookingState {
 
 // Notifier for premium booking
 class PremiumBookingNotifier extends StateNotifier<PremiumBookingState> {
-  PremiumBookingNotifier() : super(const PremiumBookingState());
+  PremiumBookingNotifier() : super(
+    const PremiumBookingState(
+      passengerDetails: [PassengerDetail(name: '')],
+    ),
+  );
 
   void setVehicleType(PremiumVehicleType type) {
     state = state.copyWith(selectedVehicleType: type, error: null);
@@ -443,11 +540,56 @@ class PremiumBookingNotifier extends StateNotifier<PremiumBookingState> {
   }
 
   void setPassengers(int count) {
-    state = state.copyWith(passengers: count, error: null);
+    // Initialize or adjust passenger details list when count changes
+    final currentDetails = List<PassengerDetail>.from(state.passengerDetails);
+    
+    if (count > currentDetails.length) {
+      // Add empty passenger details
+      for (int i = currentDetails.length; i < count; i++) {
+        currentDetails.add(const PassengerDetail(name: ''));
+      }
+    } else if (count < currentDetails.length) {
+      // Remove extra passenger details
+      currentDetails.removeRange(count, currentDetails.length);
+    }
+    
+    state = state.copyWith(
+      passengers: count,
+      passengerDetails: currentDetails,
+      error: null,
+    );
   }
 
   void setPassengerName(String name) {
     state = state.copyWith(passengerName: name, error: null);
+  }
+  
+  void updatePassengerDetail(int index, {
+    String? name,
+    String? email,
+    String? phone,
+  }) {
+    if (index < 0 || index >= state.passengers) return;
+    
+    final updatedDetails = List<PassengerDetail>.from(state.passengerDetails);
+    
+    // Ensure the list has enough entries
+    while (updatedDetails.length <= index) {
+      updatedDetails.add(const PassengerDetail(name: ''));
+    }
+    
+    final currentDetail = updatedDetails[index];
+    
+    updatedDetails[index] = PassengerDetail(
+      name: name ?? currentDetail.name,
+      email: email ?? currentDetail.email,
+      phone: phone ?? currentDetail.phone,
+    );
+    
+    debugPrint('👤 Updated passenger $index: name="${updatedDetails[index].name}" (${updatedDetails[index].name.trim().length} chars)');
+    debugPrint('✅ Can book: ${state.copyWith(passengerDetails: updatedDetails).canBook}');
+    
+    state = state.copyWith(passengerDetails: updatedDetails, error: null);
   }
 
   void clearError() {
@@ -483,7 +625,11 @@ class PremiumBookingNotifier extends StateNotifier<PremiumBookingState> {
 
       // Create boarding pass (this would typically be done on the backend)
       final boardingPassNotifier = ref.read(boardingPassProvider.notifier);
-      final passengerName = overridePassengerName ?? state.passengerName!;
+      
+      // Use first passenger name or override
+      final passengerName = overridePassengerName ?? 
+                            (state.passengerDetails.isNotEmpty ? state.passengerDetails[0].name : state.passengerName ?? '');
+      
       final boardingPass = await boardingPassNotifier.createBoardingPass(
         rideEventId: rideEventId,
         passengerName: passengerName,
@@ -493,6 +639,7 @@ class PremiumBookingNotifier extends StateNotifier<PremiumBookingState> {
         departureTime: departureDateTime,
         arrivalTime: state.arrivalDateTime,
         fare: state.estimatedFare,
+        passengerDetails: state.passengerDetails,
       );
 
       state = state.copyWith(isLoading: false);

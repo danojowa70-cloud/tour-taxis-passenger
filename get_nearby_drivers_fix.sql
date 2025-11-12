@@ -6,7 +6,8 @@
 CREATE OR REPLACE FUNCTION public.get_nearby_drivers(
   lat double precision,
   lng double precision,
-  radius_km double precision DEFAULT 10.0
+  radius_km double precision DEFAULT 10.0,
+  desired_vehicle text DEFAULT NULL
 )
 RETURNS TABLE (
   id uuid,
@@ -55,6 +56,20 @@ BEGIN
     AND d.current_latitude IS NOT NULL
     AND d.current_longitude IS NOT NULL
     AND d.last_location_update > NOW() - INTERVAL '30 minutes'  -- Driver was active in last 30 minutes
+    AND (
+      -- If no vehicle type specified, return all drivers
+      desired_vehicle IS NULL
+      -- Exact match (case-insensitive)
+      OR lower(trim(d.vehicle_type)) = lower(trim(desired_vehicle))
+      -- Handle 'car' and 'sedan' as synonyms for compatibility
+      OR (lower(trim(desired_vehicle)) = 'car' AND lower(trim(d.vehicle_type)) IN ('car', 'sedan'))
+      OR (lower(trim(desired_vehicle)) = 'sedan' AND lower(trim(d.vehicle_type)) IN ('car', 'sedan'))
+      -- Handle 'bike' variants (bike, motorcycle, etc.)
+      OR (lower(trim(desired_vehicle)) = 'bike' AND lower(trim(d.vehicle_type)) IN ('bike', 'motorcycle', 'motorbike'))
+      OR (lower(trim(desired_vehicle)) = 'motorcycle' AND lower(trim(d.vehicle_type)) IN ('bike', 'motorcycle', 'motorbike'))
+      -- Exact SUV match
+      OR (lower(trim(desired_vehicle)) = 'suv' AND lower(trim(d.vehicle_type)) = 'suv')
+    )
     AND ST_DWithin(
       ST_MakePoint(lng, lat)::geography,
       ST_MakePoint(d.current_longitude, d.current_latitude)::geography,
